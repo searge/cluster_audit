@@ -17,6 +17,7 @@ dev = [
     "mypy>=1.8.0",
     "pandas-stubs>=2.0.0",
     "types-seaborn>=0.13.0",
+    "pylance>=0.32.0",
 ]
 
 [tool.ruff]

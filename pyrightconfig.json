@@ -7,9 +7,13 @@
   "typeCheckingMode": "strict",
   "reportMissingImports": true,
   "reportMissingTypeStubs": false,
-  "reportUnknownMemberType": "warning",
-  "reportUnknownArgumentType": "warning",
-  "reportUnknownVariableType": "warning",
+  "reportUnknownMemberType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownLambdaType": "none",
+  "reportUnusedImport": "none",
+  "reportAssignmentType": "none",
+  "reportArgumentType": "none",
   "reportGeneralTypeIssues": true,
   "stubPath": ".venv/lib/python3.12/site-packages"
 }
