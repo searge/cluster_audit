@@ -1,0 +1,15 @@
+{
+  "include": ["."],
+  "exclude": ["reports/**", ".venv/**", "**/__pycache__/**", ".ruff_cache/**"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "strict",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "reportUnknownMemberType": "warning",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownVariableType": "warning",
+  "reportGeneralTypeIssues": true,
+  "stubPath": ".venv/lib/python3.12/site-packages"
+}
