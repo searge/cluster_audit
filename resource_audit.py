@@ -11,7 +11,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -93,6 +93,55 @@ class NodeInfo:
 
 
 @dataclass
+class PodDensityInfo:
+    """Pod density information per node"""
+
+    node_name: str
+    node_type: str
+    running_pods: int
+    failed_pods: int
+    pending_pods: int
+    total_pods: int
+    pod_capacity: int
+    cpu_capacity: float
+    memory_capacity: int
+    cpu_requests: float
+    memory_requests: int
+    pod_utilization_pct: float
+    cpu_utilization_pct: float
+    memory_utilization_pct: float
+    approaching_limit: bool
+
+
+@dataclass
+class NamespaceEfficiencyInfo:
+    """Namespace resource efficiency information"""
+
+    namespace: str
+    cpu_requests: float
+    memory_requests: int
+    cpu_waste_potential: float
+    memory_waste_potential: int
+    efficiency_score: float
+    pod_count: int
+    container_count: int
+
+
+@dataclass
+class SchedulingIssue:
+    """Scheduling issue information"""
+
+    pod_name: str
+    namespace: str
+    issue_type: Literal["PENDING", "FAILED", "OVER_CAPACITY"]
+    reason: str
+    node_name: str | None
+    duration_minutes: int | None
+    cpu_request: float
+    memory_request: int
+
+
+@dataclass
 class AuditSnapshot:
     """Complete audit snapshot at a point in time"""
 
@@ -140,6 +189,24 @@ class K8sResourceAuditor:
         # File paths
         self.snapshots_file = self.data_dir / "audit_snapshots.json"
         self.trends_file = self.data_dir / "trends.csv"
+        
+        # System namespaces to exclude from audit
+        self.system_namespaces = {
+            "kube-system",
+            "kube-public", 
+            "kube-node-lease",
+            "default",
+            "ingress-controller",
+        }
+    
+    def is_system_namespace(self, namespace: str) -> bool:
+        """Check if namespace should be excluded from audit"""
+        return (
+            namespace in self.system_namespaces
+            or namespace.startswith("cattle-")
+            or namespace.startswith("rancher-")
+            or namespace.startswith("kube-")
+        )
 
     def run_kubectl(self, command: str) -> dict[str, Any]:
         """Execute kubectl command and return JSON output"""
@@ -272,25 +339,26 @@ class K8sResourceAuditor:
             )
 
         # Get pods
-        pods_data = self.run_kubectl(
-            "get pods -A --field-selector=status.phase=Running"
-        )
+        pods_data = self.run_kubectl("get pods -A")
         pods: list[PodInfo] = []
 
         for pod in pods_data["items"]:
-            containers = [
-                self.analyze_container(container)
-                for container in pod["spec"]["containers"]
-            ]
+            # Skip system namespaces and only include running pods for resource analysis
+            namespace = pod["metadata"]["namespace"]
+            if pod["status"]["phase"] == "Running" and not self.is_system_namespace(namespace):
+                containers = [
+                    self.analyze_container(container)
+                    for container in pod["spec"]["containers"]
+                ]
 
-            pods.append(
-                PodInfo(
-                    name=pod["metadata"]["name"],
-                    namespace=pod["metadata"]["namespace"],
-                    node=pod["spec"].get("nodeName", "Unknown"),
-                    containers=containers,
+                pods.append(
+                    PodInfo(
+                        name=pod["metadata"]["name"],
+                        namespace=namespace,
+                        node=pod["spec"].get("nodeName", "Unknown"),
+                        containers=containers,
+                    )
                 )
-            )
 
         # Calculate cluster stats
         cluster_stats = self.calculate_cluster_stats(nodes, pods)
@@ -728,10 +796,370 @@ class K8sResourceAuditor:
 
         print(f"  → {filename}")
 
-    def run_audit(self) -> None:
+    def analyze_pod_density(self, snapshot: AuditSnapshot) -> list[PodDensityInfo]:
+        """Analyze pod density per node with capacity utilization"""
+        all_pods_data = self.run_kubectl("get pods -A")
+
+        # Count pods by status per node
+        node_pod_stats: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"running": 0, "failed": 0, "pending": 0, "total": 0}
+        )
+
+        for pod in all_pods_data["items"]:
+            namespace = pod["metadata"]["namespace"]
+            # Skip system namespaces
+            if self.is_system_namespace(namespace):
+                continue
+                
+            node_name = pod["spec"].get("nodeName", "Unknown")
+            phase = pod["status"]["phase"]
+
+            node_pod_stats[node_name]["total"] += 1
+            if phase == "Running":
+                node_pod_stats[node_name]["running"] += 1
+            elif phase == "Failed":
+                node_pod_stats[node_name]["failed"] += 1
+            elif phase == "Pending":
+                node_pod_stats[node_name]["pending"] += 1
+
+        # Calculate resource usage per node
+        node_usage: dict[str, dict[str, float]] = defaultdict(
+            lambda: {"cpu_requests": 0.0, "memory_requests": 0}
+        )
+
+        for pod in snapshot.pods:
+            if pod.node != "Unknown":
+                node_usage[pod.node]["cpu_requests"] += pod.total_cpu_request
+                node_usage[pod.node]["memory_requests"] += pod.total_memory_request
+
+        density_info: list[PodDensityInfo] = []
+
+        for node in snapshot.nodes:
+            stats = node_pod_stats[node.name]
+            usage = node_usage[node.name]
+
+            pod_utilization = (
+                (stats["total"] / node.pod_capacity * 100)
+                if node.pod_capacity > 0
+                else 0
+            )
+            cpu_utilization = (
+                (usage["cpu_requests"] / node.cpu_allocatable * 100)
+                if node.cpu_allocatable > 0
+                else 0
+            )
+            memory_utilization = (
+                (usage["memory_requests"] / node.memory_allocatable * 100)
+                if node.memory_allocatable > 0
+                else 0
+            )
+
+            approaching_limit = pod_utilization > 90.0  # >90% of pod capacity
+
+            density_info.append(
+                PodDensityInfo(
+                    node_name=node.name,
+                    node_type=node.node_type,
+                    running_pods=stats["running"],
+                    failed_pods=stats["failed"],
+                    pending_pods=stats["pending"],
+                    total_pods=stats["total"],
+                    pod_capacity=node.pod_capacity,
+                    cpu_capacity=node.cpu_allocatable,
+                    memory_capacity=node.memory_allocatable,
+                    cpu_requests=usage["cpu_requests"],
+                    memory_requests=int(usage["memory_requests"]),
+                    pod_utilization_pct=pod_utilization,
+                    cpu_utilization_pct=cpu_utilization,
+                    memory_utilization_pct=memory_utilization,
+                    approaching_limit=approaching_limit,
+                )
+            )
+
+        return density_info
+
+    def analyze_namespace_efficiency(
+        self, snapshot: AuditSnapshot
+    ) -> list[NamespaceEfficiencyInfo]:
+        """Analyze namespace resource efficiency excluding system namespaces"""
+        ns_stats: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "cpu_requests": 0.0,
+                "memory_requests": 0,
+                "pod_count": 0,
+                "container_count": 0,
+            }
+        )
+
+        # System namespaces are already filtered in collect_cluster_data
+        for pod in snapshot.pods:
+            ns_stats[pod.namespace]["cpu_requests"] += pod.total_cpu_request
+            ns_stats[pod.namespace]["memory_requests"] += pod.total_memory_request
+            ns_stats[pod.namespace]["pod_count"] += 1
+            ns_stats[pod.namespace]["container_count"] += len(pod.containers)
+
+        efficiency_info: list[NamespaceEfficiencyInfo] = []
+
+        for ns, stats in ns_stats.items():
+            # Simulate potential waste (30% of requests as potential waste baseline)
+            cpu_waste_potential = stats["cpu_requests"] * 0.3
+            memory_waste_potential = int(stats["memory_requests"] * 0.3)
+
+            # Calculate efficiency score (higher is better, based on resource density)
+            cpu_per_pod = (
+                stats["cpu_requests"] / stats["pod_count"]
+                if stats["pod_count"] > 0
+                else 0
+            )
+            efficiency_score = min(100.0, (cpu_per_pod / 1000) * 100)  # Scale to 0-100
+
+            efficiency_info.append(
+                NamespaceEfficiencyInfo(
+                    namespace=ns,
+                    cpu_requests=stats["cpu_requests"],
+                    memory_requests=stats["memory_requests"],
+                    cpu_waste_potential=cpu_waste_potential,
+                    memory_waste_potential=memory_waste_potential,
+                    efficiency_score=efficiency_score,
+                    pod_count=stats["pod_count"],
+                    container_count=stats["container_count"],
+                )
+            )
+
+        return sorted(
+            efficiency_info, key=lambda x: x.cpu_waste_potential, reverse=True
+        )
+
+    def detect_scheduling_issues(
+        self, snapshot: AuditSnapshot
+    ) -> list[SchedulingIssue]:
+        """Detect pending pods, failed pods, and capacity issues"""
+        all_pods_data = self.run_kubectl("get pods -A")
+        issues: list[SchedulingIssue] = []
+
+        # Track resource usage per node
+        node_usage: dict[str, dict[str, float]] = defaultdict(
+            lambda: {"cpu_requests": 0.0, "memory_requests": 0, "pod_count": 0}
+        )
+
+        for pod in snapshot.pods:
+            if pod.node != "Unknown":
+                node_usage[pod.node]["cpu_requests"] += pod.total_cpu_request
+                node_usage[pod.node]["memory_requests"] += pod.total_memory_request
+                node_usage[pod.node]["pod_count"] += 1
+
+        # Check for over-capacity nodes
+        for node in snapshot.nodes:
+            usage = node_usage[node.name]
+            if usage["pod_count"] > node.pod_capacity:
+                issues.append(
+                    SchedulingIssue(
+                        pod_name=f"node-{node.name}",
+                        namespace="cluster",
+                        issue_type="OVER_CAPACITY",
+                        reason=f"Node has {usage['pod_count']} pods but capacity is {node.pod_capacity}",
+                        node_name=node.name,
+                        duration_minutes=None,
+                        cpu_request=usage["cpu_requests"],
+                        memory_request=int(usage["memory_requests"]),
+                    )
+                )
+
+        # Check for pending and failed pods
+        for pod in all_pods_data["items"]:
+            phase = pod["status"]["phase"]
+            pod_name = pod["metadata"]["name"]
+            namespace = pod["metadata"]["namespace"]
+            node_name = pod["spec"].get("nodeName")
+            
+            # Skip system namespaces
+            if self.is_system_namespace(namespace):
+                continue
+
+            # Calculate pod resource requests
+            cpu_request = 0.0
+            memory_request = 0
+
+            for container in pod["spec"]["containers"]:
+                resources = container.get("resources", {})
+                requests = resources.get("requests", {})
+                cpu_request += self.parse_cpu(requests.get("cpu", "0"))
+                memory_request += self.parse_memory(requests.get("memory", "0Ki"))
+
+            if phase == "Pending":
+                reason = "Unknown"
+                if "status" in pod and "conditions" in pod["status"]:
+                    for condition in pod["status"]["conditions"]:
+                        if (
+                            condition.get("type") == "PodScheduled"
+                            and condition.get("status") == "False"
+                        ):
+                            reason = condition.get("reason", "Unknown")
+                            break
+
+                issues.append(
+                    SchedulingIssue(
+                        pod_name=pod_name,
+                        namespace=namespace,
+                        issue_type="PENDING",
+                        reason=reason,
+                        node_name=node_name,
+                        duration_minutes=None,
+                        cpu_request=cpu_request,
+                        memory_request=memory_request,
+                    )
+                )
+
+            elif phase == "Failed":
+                reason = pod["status"].get("reason", "Unknown")
+                issues.append(
+                    SchedulingIssue(
+                        pod_name=pod_name,
+                        namespace=namespace,
+                        issue_type="FAILED",
+                        reason=reason,
+                        node_name=node_name,
+                        duration_minutes=None,
+                        cpu_request=cpu_request,
+                        memory_request=memory_request,
+                    )
+                )
+
+        return issues
+
+    def generate_extended_reports(self, snapshot: AuditSnapshot) -> None:
+        """Generate extended operational metrics reports"""
+        timestamp_str = snapshot.timestamp.strftime("%Y%m%d_%H%M%S")
+
+        print("📊 Generating extended operational reports...")
+
+        # Pod density analysis
+        density_info = self.analyze_pod_density(snapshot)
+        self.generate_pod_density_csv(density_info, timestamp_str)
+
+        # Namespace efficiency analysis
+        efficiency_info = self.analyze_namespace_efficiency(snapshot)
+        self.generate_namespace_efficiency_csv(efficiency_info, timestamp_str)
+
+        # Scheduling issues detection
+        scheduling_issues = self.detect_scheduling_issues(snapshot)
+        self.generate_scheduling_issues_csv(scheduling_issues, timestamp_str)
+
+    def generate_pod_density_csv(
+        self, density_info: list[PodDensityInfo], timestamp: str
+    ) -> None:
+        """Generate pod density CSV report"""
+        filename = self.data_dir / f"pod_density_{timestamp}.csv"
+
+        rows: list[dict[str, Any]] = []
+        for info in density_info:
+            rows.append(
+                {
+                    "timestamp": self.timestamp.isoformat(),
+                    "node_name": info.node_name,
+                    "node_type": info.node_type,
+                    "running_pods": info.running_pods,
+                    "failed_pods": info.failed_pods,
+                    "pending_pods": info.pending_pods,
+                    "total_pods": info.total_pods,
+                    "pod_capacity": info.pod_capacity,
+                    "pod_utilization_pct": f"{info.pod_utilization_pct:.1f}",
+                    "cpu_requests_m": int(info.cpu_requests),
+                    "cpu_capacity_m": int(info.cpu_capacity),
+                    "cpu_utilization_pct": f"{info.cpu_utilization_pct:.1f}",
+                    "memory_requests_mb": int(info.memory_requests / 1024 / 1024),
+                    "memory_capacity_mb": int(info.memory_capacity / 1024 / 1024),
+                    "memory_utilization_pct": f"{info.memory_utilization_pct:.1f}",
+                    "approaching_pod_limit": info.approaching_limit,
+                    "alert_level": "HIGH" if info.approaching_limit else "NORMAL",
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        df = df.sort_values(
+            ["approaching_pod_limit", "pod_utilization_pct"], ascending=[False, False]
+        )
+        df.to_csv(filename, index=False)
+        print(f"  → {filename}")
+
+    def generate_namespace_efficiency_csv(
+        self, efficiency_info: list[NamespaceEfficiencyInfo], timestamp: str
+    ) -> None:
+        """Generate namespace efficiency CSV report"""
+        filename = self.data_dir / f"namespace_efficiency_{timestamp}.csv"
+
+        rows: list[dict[str, Any]] = []
+        for info in efficiency_info:
+            rows.append(
+                {
+                    "timestamp": self.timestamp.isoformat(),
+                    "namespace": info.namespace,
+                    "pod_count": info.pod_count,
+                    "container_count": info.container_count,
+                    "cpu_requests_m": int(info.cpu_requests),
+                    "memory_requests_mb": int(info.memory_requests / 1024 / 1024),
+                    "cpu_waste_potential_m": int(info.cpu_waste_potential),
+                    "memory_waste_potential_mb": int(
+                        info.memory_waste_potential / 1024 / 1024
+                    ),
+                    "efficiency_score": f"{info.efficiency_score:.1f}",
+                    "cpu_per_pod_m": int(info.cpu_requests / info.pod_count)
+                    if info.pod_count > 0
+                    else 0,
+                    "memory_per_pod_mb": int(
+                        info.memory_requests / 1024 / 1024 / info.pod_count
+                    )
+                    if info.pod_count > 0
+                    else 0,
+                    "waste_priority": "HIGH"
+                    if info.cpu_waste_potential > 1000
+                    else "MEDIUM"
+                    if info.cpu_waste_potential > 500
+                    else "LOW",
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        df.to_csv(filename, index=False)
+        print(f"  → {filename}")
+
+    def generate_scheduling_issues_csv(
+        self, scheduling_issues: list[SchedulingIssue], timestamp: str
+    ) -> None:
+        """Generate scheduling issues CSV report"""
+        filename = self.data_dir / f"scheduling_issues_{timestamp}.csv"
+
+        rows: list[dict[str, Any]] = []
+        for issue in scheduling_issues:
+            rows.append(
+                {
+                    "timestamp": self.timestamp.isoformat(),
+                    "pod_name": issue.pod_name,
+                    "namespace": issue.namespace,
+                    "issue_type": issue.issue_type,
+                    "reason": issue.reason,
+                    "node_name": issue.node_name or "None",
+                    "duration_minutes": issue.duration_minutes or 0,
+                    "cpu_request_m": int(issue.cpu_request),
+                    "memory_request_mb": int(issue.memory_request / 1024 / 1024),
+                    "severity": "CRITICAL"
+                    if issue.issue_type == "OVER_CAPACITY"
+                    else "HIGH"
+                    if issue.issue_type == "PENDING"
+                    else "MEDIUM",
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        df = df.sort_values(["severity", "cpu_request_m"], ascending=[False, False])
+        df.to_csv(filename, index=False)
+        print(f"  → {filename}")
+
+    def run_audit(self, mode: str = "current") -> None:
         """Run complete audit process"""
         print("🚀 Starting Kubernetes Resource Audit")
         print(f"📅 Timestamp: {self.timestamp}")
+        print(f"🔧 Mode: {mode}")
 
         # Collect current state
         snapshot = self.collect_cluster_data()
@@ -742,16 +1170,32 @@ class K8sResourceAuditor:
         # Save current snapshot
         self.save_snapshot(snapshot)
 
-        # Generate reports
-        self.generate_reports(snapshot, previous_snapshots)
+        if mode == "extended":
+            # Generate extended operational reports
+            self.generate_extended_reports(snapshot)
+        else:
+            # Generate standard reports
+            self.generate_reports(snapshot, previous_snapshots)
 
         print(f"\n✅ Audit completed! Check {self.data_dir}/ for reports")
         print("📈 Run regularly to track trends and improvements")
 
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Kubernetes Resource Audit Tool")
+    parser.add_argument(
+        "--mode",
+        choices=["current", "extended"],
+        default="current",
+        help="Audit mode: current (standard reports) or extended (operational metrics)",
+    )
+
+    args = parser.parse_args()
+
     auditor = K8sResourceAuditor()
-    auditor.run_audit()
+    auditor.run_audit(mode=args.mode)
 
 
 if __name__ == "__main__":

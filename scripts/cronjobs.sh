@@ -59,18 +59,18 @@ run_current_audit() {
     fi
 }
 
-# Function to run weekly analysis
-run_weekly_analysis() {
-    log "Starting weekly analysis..."
+# Function to run extended operational audit
+run_extended_audit() {
+    log "Starting extended operational audit..."
 
     export KUBECONFIG="$KUBECONFIG_FILE"
     cd "$PROJECT_DIR"
 
-    if "$VENV_PYTHON" resource_audit.py --mode weekly >> "$LOG_FILE" 2>&1; then
-        log "Weekly analysis completed successfully"
+    if "$VENV_PYTHON" resource_audit.py --mode extended >> "$LOG_FILE" 2>&1; then
+        log "Extended audit completed successfully"
         return 0
     else
-        log "ERROR: Weekly analysis failed"
+        log "ERROR: Extended audit failed"
         return 1
     fi
 }
@@ -112,18 +112,18 @@ cleanup_old_files() {
 
 # Function to show usage
 show_usage() {
-    echo "Usage: $0 [current|weekly|dashboard|cleanup|health]"
+    echo "Usage: $0 [current|extended|dashboard|cleanup|health]"
     echo ""
     echo "Commands:"
     echo "  current   - Run current state audit"
-    echo "  weekly    - Run weekly analysis and trends"
+    echo "  extended  - Run extended operational metrics audit"
     echo "  dashboard - Run dashboard summary"
     echo "  cleanup   - Clean up old report files"
     echo "  health    - Check system health and prerequisites"
     echo ""
     echo "Examples:"
     echo "  $0 current          # For cron hourly jobs"
-    echo "  $0 weekly           # For cron weekly jobs"
+    echo "  $0 extended         # For detailed operational analysis"
     echo "  $0 health           # Check if everything works"
 }
 
@@ -164,12 +164,12 @@ main() {
                 exit 1
             fi
             ;;
-        "weekly")
-            if check_prereqs && run_weekly_analysis; then
-                log "=== Weekly analysis completed successfully ==="
+        "extended")
+            if check_prereqs && run_extended_audit; then
+                log "=== Extended audit completed successfully ==="
                 exit 0
             else
-                log "=== Weekly analysis failed ==="
+                log "=== Extended audit failed ==="
                 exit 1
             fi
             ;;

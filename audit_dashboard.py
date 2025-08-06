@@ -83,6 +83,9 @@ def load_latest_audit_files(config: AuditConfig) -> dict[str, pd.DataFrame]:
         "pods": "pods_detail_*.csv",
         "nodes": "nodes_utilization_*.csv",
         "namespaces": "namespaces_summary_*.csv",
+        "pod_density": "pod_density_*.csv",
+        "namespace_efficiency": "namespace_efficiency_*.csv",
+        "scheduling_issues": "scheduling_issues_*.csv",
     }
 
     for key, pattern in patterns.items():
@@ -421,6 +424,152 @@ def print_nodes_analysis(df: pd.DataFrame) -> None:
     print()
 
 
+def print_pod_density_analysis(df: pd.DataFrame, config: AuditConfig) -> None:  # noqa: ARG001
+    """Print pod density analysis with nodes approaching limits"""
+    print("🏗️  Pod Density Analysis:")
+
+    # Nodes approaching pod limits (>90%)
+    critical_nodes = df[df["approaching_pod_limit"]]
+    if not critical_nodes.empty:
+        print("  ⚠️  NODES APPROACHING POD LIMITS (>90%):")
+        for _, node in critical_nodes.iterrows():
+            print(
+                f"    • {node['node_name']} ({node['node_type']}): "
+                f"{node['total_pods']}/{node['pod_capacity']} pods ({node['pod_utilization_pct']}%)"
+            )
+        print()
+
+    # Summary by node type
+    summary = (
+        df.groupby("node_type")
+        .agg(
+            {
+                "total_pods": "sum",
+                "pod_capacity": "sum",
+                "running_pods": "sum",
+                "failed_pods": "sum",
+                "pending_pods": "sum",
+            }
+        )
+        .reset_index()
+    )
+
+    print("  📊 Summary by Node Type:")
+    print(
+        f"{'Node Type':<20} {'Pods':<8} {'Capacity':<10} {'Usage%':<8} {'Failed':<8} {'Pending':<8}"
+    )
+    print("-" * 70)
+
+    for _, row in summary.iterrows():
+        usage_pct = (
+            (row["total_pods"] / row["pod_capacity"] * 100)
+            if row["pod_capacity"] > 0
+            else 0
+        )
+        print(
+            f"{row['node_type']:<20} {row['total_pods']:<8} {row['pod_capacity']:<10} "
+            f"{usage_pct:.1f}%{'':<4} {row['failed_pods']:<8} {row['pending_pods']:<8}"
+        )
+    print()
+
+
+def print_namespace_efficiency(df: pd.DataFrame, config: AuditConfig) -> None:
+    """Print namespace resource efficiency analysis"""
+    print("🎯 Namespace Resource Efficiency (Top Wasters):")
+
+    # Show top 10 wasteful namespaces
+    top_wasters = df.head(config.default_top_count)
+
+    if top_wasters.empty:
+        print("  ✅ No significant resource waste detected")
+        return
+
+    print(
+        f"{'Namespace':<30} {'CPU Waste(m)':<12} {'Memory Waste(MB)':<15} {'Efficiency':<10} {'Priority':<8}"
+    )
+    print("-" * 85)
+
+    for _, ns in top_wasters.iterrows():
+        print(
+            f"{ns['namespace']:<30} {ns['cpu_waste_potential_m']:<12} "
+            f"{ns['memory_waste_potential_mb']:<15} {ns['efficiency_score']}%{'':<6} {ns['waste_priority']:<8}"
+        )
+
+    # Summary statistics
+    total_waste_cpu = df["cpu_waste_potential_m"].sum()
+    total_waste_memory = df["memory_waste_potential_mb"].sum()
+    high_priority_count = len(df[df["waste_priority"] == "HIGH"])
+
+    print()
+    print(
+        f"  📊 Waste Summary: {total_waste_cpu:.0f}m CPU, {total_waste_memory:.0f}MB memory wasted"
+    )
+    print(f"  🚨 High priority namespaces: {high_priority_count}")
+    print()
+
+
+def print_scheduling_issues(df: pd.DataFrame, config: AuditConfig) -> None:  # noqa: ARG001
+    """Print scheduling issues analysis"""
+    if df.empty:
+        print("✅ No scheduling issues detected")
+        return
+
+    print("🚨 Scheduling Issues Analysis:")
+
+    # Count by issue type
+    issue_counts = df["issue_type"].value_counts()
+    severity_counts = df["severity"].value_counts()
+
+    print("  📊 Issue Summary:")
+    for issue_type, count in issue_counts.items():
+        print(f"    • {issue_type}: {count} pods")
+
+    print(
+        f"  ⚡ Severity: Critical={severity_counts.get('CRITICAL', 0)}, "
+        f"High={severity_counts.get('HIGH', 0)}, Medium={severity_counts.get('MEDIUM', 0)}"
+    )
+    print()
+
+    # Show critical issues first
+    critical_issues = df[df["severity"] == "CRITICAL"].head(5)
+    if not critical_issues.empty:
+        print("  🔴 CRITICAL ISSUES:")
+        for _, issue in critical_issues.iterrows():
+            print(
+                f"    • {issue['namespace']}/{issue['pod_name']}: {issue['reason']} "
+                f"(CPU: {issue['cpu_request_m']}m)"
+            )
+        print()
+
+    # Show pending pods
+    pending_issues = df[df["issue_type"] == "PENDING"].head(5)
+    if not pending_issues.empty:
+        print("  ⏳ PENDING PODS:")
+        for _, issue in pending_issues.iterrows():
+            print(f"    • {issue['namespace']}/{issue['pod_name']}: {issue['reason']}")
+        print()
+
+
+def print_extended_summary(
+    latest: dict[str, pd.DataFrame], config: AuditConfig
+) -> None:
+    """Print extended operational metrics summary"""
+    print("📊 EXTENDED OPERATIONAL METRICS:")
+    print()
+
+    # Pod density analysis
+    if "pod_density" in latest:
+        print_pod_density_analysis(latest["pod_density"], config)
+
+    # Namespace efficiency analysis
+    if "namespace_efficiency" in latest:
+        print_namespace_efficiency(latest["namespace_efficiency"], config)
+
+    # Scheduling issues analysis
+    if "scheduling_issues" in latest:
+        print_scheduling_issues(latest["scheduling_issues"], config)
+
+
 def print_monitoring_summary(
     state: CurrentState, trends: pd.DataFrame, config: AuditConfig
 ) -> None:
@@ -532,6 +681,13 @@ def generate_summary_report(config: AuditConfig) -> None:
     # Node analysis
     if "nodes" in latest:
         print_nodes_analysis(latest["nodes"])
+
+    # Extended operational metrics (if available)
+    if any(
+        key in latest
+        for key in ["pod_density", "namespace_efficiency", "scheduling_issues"]
+    ):
+        print_extended_summary(latest, config)
 
     # Monitoring summary
     print_monitoring_summary(current_state, trends, config)
