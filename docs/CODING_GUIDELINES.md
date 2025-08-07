@@ -3,18 +3,21 @@
 ## Code Style
 
 **Formatting**: Use Ruff for automatic formatting and linting
+
 ```bash
 uv run ruff format .
 uv run ruff check .
 ```
 
 **Type Hints**: Always use type hints for function parameters and returns
+
 ```python
 def parse_cpu(self, cpu_str: str) -> float:
     """Parse CPU string to millicores"""
 ```
 
 **Docstrings**: Use concise docstrings for all public functions and classes
+
 ```python
 @dataclass
 class ContainerResources:
@@ -24,6 +27,7 @@ class ContainerResources:
 ## Architecture Patterns
 
 **Dataclasses**: Use `@dataclass` for data structures instead of plain classes
+
 ```python
 @dataclass
 class AuditSnapshot:
@@ -34,6 +38,7 @@ class AuditSnapshot:
 ```
 
 **Functional Style**: Prefer pure functions and immutable data where possible
+
 ```python
 @dataclass(frozen=True)
 class AuditConfig:
@@ -43,6 +48,7 @@ class AuditConfig:
 ```
 
 **Error Handling**: Use explicit error handling with informative messages
+
 ```python
 try:
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
@@ -69,6 +75,7 @@ except subprocess.CalledProcessError as e:
 ## Dependencies
 
 Stick to minimal, well-maintained dependencies:
+
 - `pandas` for data analysis
 - `matplotlib`/`seaborn` for visualization
 - Standard library for everything else
@@ -76,6 +83,7 @@ Stick to minimal, well-maintained dependencies:
 ## Testing
 
 Follow the existing pattern:
+
 ```bash
 uv run python -m mypy .
 uv run ruff check .
