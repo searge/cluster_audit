@@ -345,7 +345,9 @@ class K8sResourceAuditor:
         for pod in pods_data["items"]:
             # Skip system namespaces and only include running pods for resource analysis
             namespace = pod["metadata"]["namespace"]
-            if pod["status"]["phase"] == "Running" and not self.is_system_namespace(namespace):
+            if pod["status"]["phase"] == "Running" and not self.is_system_namespace(
+                namespace
+            ):
                 containers = [
                     self.analyze_container(container)
                     for container in pod["spec"]["containers"]

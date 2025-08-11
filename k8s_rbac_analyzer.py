@@ -20,6 +20,7 @@ import pandas as pd
 @dataclass
 class UserAccess:
     """User access information"""
+
     username: str
     subject_type: str  # User, Group, ServiceAccount
     namespaces: list[str]
@@ -31,6 +32,7 @@ class UserAccess:
 @dataclass
 class ProjectGroup:
     """Logical project grouping based on naming patterns"""
+
     project_name: str
     namespaces: list[str]
     pattern: str
@@ -45,10 +47,17 @@ class K8sRBACAnalyzer:
 
         # Common system namespaces to exclude
         self.system_namespaces = {
-            "kube-system", "kube-public", "kube-node-lease", "default",
-            "gke-gmp-system", "gke-managed-cim", "gke-managed-filestorecsi",
-            "gke-managed-parallelstorecsi", "gke-managed-system",
-            "gke-managed-volumepopulator", "gmp-public"
+            "kube-system",
+            "kube-public",
+            "kube-node-lease",
+            "default",
+            "gke-gmp-system",
+            "gke-managed-cim",
+            "gke-managed-filestorecsi",
+            "gke-managed-parallelstorecsi",
+            "gke-managed-system",
+            "gke-managed-volumepopulator",
+            "gmp-public",
         }
 
     def run_kubectl(self, command: str) -> dict[str, Any]:
@@ -79,19 +88,23 @@ class K8sRBACAnalyzer:
             name = ns["metadata"]["name"]
 
             # Skip system namespaces
-            if name in self.system_namespaces or name.startswith(("cattle-", "rancher-")):
+            if name in self.system_namespaces or name.startswith(
+                ("cattle-", "rancher-")
+            ):
                 continue
 
             ns_info[name] = {
                 "name": name,
                 "labels": ns["metadata"].get("labels", {}),
                 "annotations": ns["metadata"].get("annotations", {}),
-                "created": ns["metadata"].get("creationTimestamp", "")
+                "created": ns["metadata"].get("creationTimestamp", ""),
             }
 
         return ns_info
 
-    def detect_project_patterns(self, namespaces: dict[str, dict[str, Any]]) -> dict[str, ProjectGroup]:
+    def detect_project_patterns(
+        self, namespaces: dict[str, dict[str, Any]]
+    ) -> dict[str, ProjectGroup]:
         """Detect logical project groupings based on naming patterns"""
         print("🔍 Detecting project patterns from namespace names...")
 
@@ -101,7 +114,10 @@ class K8sRBACAnalyzer:
         # Common patterns to detect
         patterns = [
             # Environment-based patterns
-            (r"^(.+)-(dev|development|staging|stage|prod|production|test|testing)$", "env"),
+            (
+                r"^(.+)-(dev|development|staging|stage|prod|production|test|testing)$",
+                "env",
+            ),
             # Service-based patterns
             (r"^(.+)-(frontend|backend|api|service|app|web|ui)$", "service"),
             # Component-based patterns
@@ -124,7 +140,10 @@ class K8sRBACAnalyzer:
                     # Find all namespaces matching this project
                     project_namespaces = []
                     for other_ns in namespaces:
-                        if other_ns.startswith(f"{project_name}-") or other_ns == project_name:
+                        if (
+                            other_ns.startswith(f"{project_name}-")
+                            or other_ns == project_name
+                        ):
                             project_namespaces.append(other_ns)
                             assigned_namespaces.add(other_ns)
 
@@ -134,7 +153,7 @@ class K8sRBACAnalyzer:
                             namespaces=project_namespaces,
                             pattern=f"{pattern_type}: {pattern_regex}",
                             users=[],
-                            service_accounts=[]
+                            service_accounts=[],
                         )
 
         # Add remaining namespaces as individual projects
@@ -145,7 +164,7 @@ class K8sRBACAnalyzer:
                     namespaces=[ns_name],
                     pattern="standalone",
                     users=[],
-                    service_accounts=[]
+                    service_accounts=[],
                 )
 
         return projects
@@ -164,7 +183,10 @@ class K8sRBACAnalyzer:
             role_name = role_ref.get("name", "")
 
             # Skip system bindings
-            if any(skip in binding_name.lower() for skip in ["system:", "gke-", "kubernetes-"]):
+            if any(
+                skip in binding_name.lower()
+                for skip in ["system:", "gke-", "kubernetes-"]
+            ):
                 continue
 
             for subject in binding.get("subjects", []):
@@ -182,10 +204,12 @@ class K8sRBACAnalyzer:
                             namespaces=[],
                             cluster_roles=[],
                             namespace_roles={},
-                            service_account_namespace=subject_namespace
+                            service_account_namespace=subject_namespace,
                         )
 
-                    users[user_key].cluster_roles.append(f"{role_name} ({binding_name})")
+                    users[user_key].cluster_roles.append(
+                        f"{role_name} ({binding_name})"
+                    )
 
         # Get RoleBindings
         role_bindings = self.run_kubectl("get rolebindings -A")
@@ -214,7 +238,7 @@ class K8sRBACAnalyzer:
                             namespaces=[],
                             cluster_roles=[],
                             namespace_roles={},
-                            service_account_namespace=subject_namespace
+                            service_account_namespace=subject_namespace,
                         )
 
                     if binding_namespace not in users[user_key].namespaces:
@@ -237,7 +261,9 @@ class K8sRBACAnalyzer:
         if not pods:
             return {}
 
-        ns_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"running": 0, "total": 0, "failed": 0, "pending": 0})
+        ns_stats: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"running": 0, "total": 0, "failed": 0, "pending": 0}
+        )
 
         for pod in pods.get("items", []):
             namespace = pod["metadata"]["namespace"]
@@ -256,20 +282,24 @@ class K8sRBACAnalyzer:
 
         return dict(ns_stats)
 
-    def map_users_to_projects(self, projects: dict[str, ProjectGroup],
-                             users: dict[str, UserAccess]) -> dict[str, ProjectGroup]:
+    def map_users_to_projects(
+        self, projects: dict[str, ProjectGroup], users: dict[str, UserAccess]
+    ) -> dict[str, ProjectGroup]:
         """Map users to detected projects"""
         print("🔗 Mapping users to projects...")
 
         for _user_key, user_access in users.items():
             # Skip obvious service accounts and system users
-            if (user_access.subject_type == "ServiceAccount" and
-                any(sys in user_access.username for sys in ["system", "default", "gke-"])):
+            if user_access.subject_type == "ServiceAccount" and any(
+                sys in user_access.username for sys in ["system", "default", "gke-"]
+            ):
                 continue
 
             for _project_name, project in projects.items():
                 # Check if user has access to any namespace in this project
-                user_project_namespaces = set(user_access.namespaces) & set(project.namespaces)
+                user_project_namespaces = set(user_access.namespaces) & set(
+                    project.namespaces
+                )
 
                 if user_project_namespaces:
                     if user_access.subject_type == "ServiceAccount":
@@ -281,33 +311,48 @@ class K8sRBACAnalyzer:
 
         return projects
 
-    def generate_reports(self, projects: dict[str, ProjectGroup],
-                        users: dict[str, UserAccess],
-                        pod_stats: dict[str, dict[str, int]]) -> None:
+    def generate_reports(
+        self,
+        projects: dict[str, ProjectGroup],
+        users: dict[str, UserAccess],
+        pod_stats: dict[str, dict[str, int]],
+    ) -> None:
         """Generate comprehensive reports"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Project summary report
         project_data = []
         for project_name, project in projects.items():
-            total_pods = sum(pod_stats.get(ns, {}).get("total", 0) for ns in project.namespaces)
-            running_pods = sum(pod_stats.get(ns, {}).get("running", 0) for ns in project.namespaces)
-            failed_pods = sum(pod_stats.get(ns, {}).get("failed", 0) for ns in project.namespaces)
+            total_pods = sum(
+                pod_stats.get(ns, {}).get("total", 0) for ns in project.namespaces
+            )
+            running_pods = sum(
+                pod_stats.get(ns, {}).get("running", 0) for ns in project.namespaces
+            )
+            failed_pods = sum(
+                pod_stats.get(ns, {}).get("failed", 0) for ns in project.namespaces
+            )
 
-            project_data.append({
-                "project_name": project_name,
-                "pattern": project.pattern,
-                "namespace_count": len(project.namespaces),
-                "namespaces": ", ".join(project.namespaces),
-                "user_count": len(project.users),
-                "users": ", ".join(project.users),
-                "service_account_count": len(project.service_accounts),
-                "service_accounts": ", ".join(project.service_accounts),
-                "total_pods": total_pods,
-                "running_pods": running_pods,
-                "failed_pods": failed_pods,
-                "health_status": "🟢 Healthy" if failed_pods == 0 else "🟡 Issues" if failed_pods < 5 else "🔴 Problems"
-            })
+            project_data.append(
+                {
+                    "project_name": project_name,
+                    "pattern": project.pattern,
+                    "namespace_count": len(project.namespaces),
+                    "namespaces": ", ".join(project.namespaces),
+                    "user_count": len(project.users),
+                    "users": ", ".join(project.users),
+                    "service_account_count": len(project.service_accounts),
+                    "service_accounts": ", ".join(project.service_accounts),
+                    "total_pods": total_pods,
+                    "running_pods": running_pods,
+                    "failed_pods": failed_pods,
+                    "health_status": "🟢 Healthy"
+                    if failed_pods == 0
+                    else "🟡 Issues"
+                    if failed_pods < 5
+                    else "🔴 Problems",
+                }
+            )
 
         if project_data:
             df_projects = pd.DataFrame(project_data)
@@ -320,23 +365,31 @@ class K8sRBACAnalyzer:
         user_data = []
         for _user_key, user_access in users.items():
             # Skip system users
-            if any(sys in user_access.username.lower() for sys in ["system", "gke-", "kubernetes-"]):
+            if any(
+                sys in user_access.username.lower()
+                for sys in ["system", "gke-", "kubernetes-"]
+            ):
                 continue
 
-            user_data.append({
-                "username": user_access.username,
-                "type": user_access.subject_type,
-                "namespace_count": len(user_access.namespaces),
-                "namespaces": ", ".join(user_access.namespaces),
-                "cluster_role_count": len(user_access.cluster_roles),
-                "cluster_roles": ", ".join(user_access.cluster_roles),
-                "namespace_roles": str(user_access.namespace_roles),
-                "service_account_namespace": user_access.service_account_namespace or ""
-            })
+            user_data.append(
+                {
+                    "username": user_access.username,
+                    "type": user_access.subject_type,
+                    "namespace_count": len(user_access.namespaces),
+                    "namespaces": ", ".join(user_access.namespaces),
+                    "cluster_role_count": len(user_access.cluster_roles),
+                    "cluster_roles": ", ".join(user_access.cluster_roles),
+                    "namespace_roles": str(user_access.namespace_roles),
+                    "service_account_namespace": user_access.service_account_namespace
+                    or "",
+                }
+            )
 
         if user_data:
             df_users = pd.DataFrame(user_data)
-            df_users = df_users.sort_values(["type", "namespace_count"], ascending=[True, False])
+            df_users = df_users.sort_values(
+                ["type", "namespace_count"], ascending=[True, False]
+            )
             users_file = self.data_dir / f"k8s_user_access_{timestamp}.csv"
             df_users.to_csv(users_file, index=False)
             print(f"👥 User access report: {users_file}")
@@ -346,28 +399,35 @@ class K8sRBACAnalyzer:
         for project_name, project in projects.items():
             for ns in project.namespaces:
                 stats = pod_stats.get(ns, {})
-                namespace_data.append({
-                    "namespace": ns,
-                    "project": project_name,
-                    "pattern": project.pattern,
-                    "total_pods": stats.get("total", 0),
-                    "running_pods": stats.get("running", 0),
-                    "failed_pods": stats.get("failed", 0),
-                    "pending_pods": stats.get("pending", 0),
-                    "users": ", ".join(project.users),
-                    "service_accounts": ", ".join(project.service_accounts)
-                })
+                namespace_data.append(
+                    {
+                        "namespace": ns,
+                        "project": project_name,
+                        "pattern": project.pattern,
+                        "total_pods": stats.get("total", 0),
+                        "running_pods": stats.get("running", 0),
+                        "failed_pods": stats.get("failed", 0),
+                        "pending_pods": stats.get("pending", 0),
+                        "users": ", ".join(project.users),
+                        "service_accounts": ", ".join(project.service_accounts),
+                    }
+                )
 
         if namespace_data:
             df_namespaces = pd.DataFrame(namespace_data)
-            df_namespaces = df_namespaces.sort_values(["project", "total_pods"], ascending=[True, False])
+            df_namespaces = df_namespaces.sort_values(
+                ["project", "total_pods"], ascending=[True, False]
+            )
             ns_file = self.data_dir / f"k8s_namespaces_{timestamp}.csv"
             df_namespaces.to_csv(ns_file, index=False)
             print(f"📋 Namespace details: {ns_file}")
 
-    def print_summary(self, projects: dict[str, ProjectGroup],
-                     users: dict[str, UserAccess],
-                     pod_stats: dict[str, dict[str, int]]) -> None:
+    def print_summary(
+        self,
+        projects: dict[str, ProjectGroup],
+        users: dict[str, UserAccess],
+        pod_stats: dict[str, dict[str, int]],
+    ) -> None:
         """Print analysis summary"""
         print("\n" + "=" * 70)
         print("🚀 KUBERNETES PROJECT & RBAC ANALYSIS")
@@ -375,12 +435,20 @@ class K8sRBACAnalyzer:
 
         total_pods = sum(stats.get("total", 0) for stats in pod_stats.values())
         real_users = [u for u in users.values() if u.subject_type == "User"]
-        service_accounts = [u for u in users.values() if u.subject_type == "ServiceAccount"
-                           and not any(sys in u.username.lower() for sys in ["system", "default", "gke-"])]
+        service_accounts = [
+            u
+            for u in users.values()
+            if u.subject_type == "ServiceAccount"
+            and not any(
+                sys in u.username.lower() for sys in ["system", "default", "gke-"]
+            )
+        ]
 
         print("📊 Overview:")
         print(f"   • Detected Projects: {len(projects)}")
-        print(f"   • Total Namespaces: {sum(len(p.namespaces) for p in projects.values())}")
+        print(
+            f"   • Total Namespaces: {sum(len(p.namespaces) for p in projects.values())}"
+        )
         print(f"   • Total Pods: {total_pods}")
         print(f"   • Human Users: {len(real_users)}")
         print(f"   • Application Service Accounts: {len(service_accounts)}")
@@ -388,13 +456,17 @@ class K8sRBACAnalyzer:
         # Show top projects by pod count
         projects_by_size = sorted(
             projects.items(),
-            key=lambda x: sum(pod_stats.get(ns, {}).get("total", 0) for ns in x[1].namespaces),
-            reverse=True
+            key=lambda x: sum(
+                pod_stats.get(ns, {}).get("total", 0) for ns in x[1].namespaces
+            ),
+            reverse=True,
         )
 
         print("\n📁 Top Projects by Pod Count:")
         for project_name, project in projects_by_size[:10]:
-            total_project_pods = sum(pod_stats.get(ns, {}).get("total", 0) for ns in project.namespaces)
+            total_project_pods = sum(
+                pod_stats.get(ns, {}).get("total", 0) for ns in project.namespaces
+            )
 
             if total_project_pods == 0:
                 continue
@@ -415,7 +487,9 @@ class K8sRBACAnalyzer:
         print("\n👥 User Summary:")
         if real_users:
             print("   Human Users found:")
-            for user in sorted(real_users, key=lambda u: len(u.namespaces), reverse=True)[:5]:
+            for user in sorted(
+                real_users, key=lambda u: len(u.namespaces), reverse=True
+            )[:5]:
                 ns_count = len(user.namespaces)
                 print(f"   • {user.username}: access to {ns_count} namespace(s)")
         else:
@@ -463,6 +537,7 @@ class K8sRBACAnalyzer:
         except Exception as e:
             print(f"❌ Analysis failed: {e}")
             import traceback
+
             traceback.print_exc()
 
 

@@ -30,7 +30,7 @@ def run_kubectl(cmd: str) -> dict[str, Any]:
         result = subprocess.run(
             f"kubectl {cmd}", shell=True, capture_output=True, text=True, check=True
         )
-        return json.loads(result.stdout)
+        return json.loads(result.stdout)  # type: ignore[no-any-return]
     except subprocess.CalledProcessError as e:
         print(f"❌ Error running kubectl: {e}")
         sys.exit(1)

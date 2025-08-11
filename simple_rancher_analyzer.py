@@ -39,7 +39,7 @@ class SimpleRancherAnalyzer:
             result = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True, check=True
             )
-            return json.loads(result.stdout)
+            return json.loads(result.stdout)  # type: ignore[no-any-return]
         except subprocess.CalledProcessError as e:
             print(f"❌ Error running kubectl: {e}")
             return {}
@@ -119,7 +119,7 @@ class SimpleRancherAnalyzer:
         if not pods:
             return {}
 
-        ns_stats = defaultdict(
+        ns_stats: dict[str, dict[str, int]] = defaultdict(
             lambda: {"running": 0, "total": 0, "failed": 0, "pending": 0}
         )
 
