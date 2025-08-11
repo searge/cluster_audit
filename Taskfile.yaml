@@ -1,0 +1,76 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  install:
+    desc: Install/update dependencies
+    cmds:
+      - uv sync
+
+  audit:
+    desc: Run standard audit
+    cmds:
+      - uv run python resource_audit.py --mode current
+
+  audit-extended:
+    desc: Run extended operational audit
+    cmds:
+      - uv run python resource_audit.py --mode extended
+
+  rancher:
+    desc: Run Rancher project analysis
+    cmds:
+      - uv run python simple_rancher_analyzer.py
+
+  rbac:
+    desc: Run RBAC analysis
+    cmds:
+      - uv run python k8s_rbac_analyzer.py
+
+  dashboard:
+    desc: Generate audit dashboard
+    cmds:
+      - uv run python audit_dashboard.py
+
+  lint:
+    desc: Run code quality checks
+    cmds:
+      - uv run ruff check .
+      - uv run ruff format --check .
+
+  typecheck:
+    desc: Run type checking
+    cmds:
+      - uv run python -m mypy .
+      - uv run pyright .
+
+  fix:
+    desc: Fix code formatting and linting issues
+    cmds:
+      - uv run ruff check --fix .
+      - uv run ruff format .
+
+  test:
+    desc: Run all checks
+    deps: [lint, typecheck]
+    cmds:
+      - echo "✅ All checks passed"
+
+  clean:
+    desc: Clean up old report files (>14 days)
+    cmds:
+      - find reports/ -name "*.csv" -type f -mtime +14 -delete
+      - find reports/ -name "*.md" -type f -mtime +7 -delete
+      - echo "🗑️ Cleanup completed"
+
+  all:
+    desc: Run complete analysis suite
+    cmds:
+      - task: audit
+      - task: rancher
+      - task: rbac
+      - task: dashboard
