@@ -10,5 +10,6 @@ wheels/
 # Virtual environments
 .venv
 
+.env
 .claude/
 reports/
