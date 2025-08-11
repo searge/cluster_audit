@@ -189,16 +189,16 @@ class K8sResourceAuditor:
         # File paths
         self.snapshots_file = self.data_dir / "audit_snapshots.json"
         self.trends_file = self.data_dir / "trends.csv"
-        
+
         # System namespaces to exclude from audit
         self.system_namespaces = {
             "kube-system",
-            "kube-public", 
+            "kube-public",
             "kube-node-lease",
             "default",
             "ingress-controller",
         }
-    
+
     def is_system_namespace(self, namespace: str) -> bool:
         """Check if namespace should be excluded from audit"""
         return (
@@ -810,7 +810,7 @@ class K8sResourceAuditor:
             # Skip system namespaces
             if self.is_system_namespace(namespace):
                 continue
-                
+
             node_name = pod["spec"].get("nodeName", "Unknown")
             phase = pod["status"]["phase"]
 
@@ -971,7 +971,7 @@ class K8sResourceAuditor:
             pod_name = pod["metadata"]["name"]
             namespace = pod["metadata"]["namespace"]
             node_name = pod["spec"].get("nodeName")
-            
+
             # Skip system namespaces
             if self.is_system_namespace(namespace):
                 continue
