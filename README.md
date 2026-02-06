@@ -4,46 +4,49 @@ A comprehensive Kubernetes resource auditing tool that analyzes resource usage, 
 
 ## Quick Start
 
+Use `Taskfile.yaml` as the primary interface. Avoid running Python scripts directly.
+
 ### Install Dependencies
 
 ```bash
-# Install Python dependencies
-uv sync
-
-# Install pyright for type checking (optional)
-pnpm add -g pyright
+task install
 ```
 
-### Running Scripts
-
-**Main resource audit:**
+### Common Tasks
 
 ```bash
-# Run complete audit
-uv run python resource_audit.py
+# Show available tasks
+task --list
 
-# Run real usage analysis (requires metrics-server)
-uv run python real_usage_analysis.py
+# Standard audit
+task audit
+
+# Extended operational audit
+task audit-extended
+
+# Workload efficiency CSV (requests/limits vs actual usage)
+task workload-efficiency
+# or short alias
+task we
 
 # Generate dashboard summary
-uv run python audit_dashboard.py
+task dashboard
 ```
 
-**Automated runs (cronjobs):**
+### Automated Runs (cronjobs)
 
 ```bash
-# Run current audit (for hourly cron)
 ./scripts/cronjobs.sh current
-
-# Run weekly analysis
-./scripts/cronjobs.sh weekly
-
-# Run dashboard summary
 ./scripts/cronjobs.sh dashboard
-
-# Health check
 ./scripts/cronjobs.sh health
+./scripts/cronjobs.sh cleanup
 ```
+
+`cleanup` removes old report files:
+
+- `*.csv` older than 14 days
+- `recommendations_*.md` and `usage_recommendations_*.md` older than 7 days
+- keeps only the last 5 `weekly_summary_*.md`
 
 ## Generated Reports
 
@@ -53,16 +56,6 @@ All reports are saved to the `reports/` directory:
 - **Markdown files**: Human-readable recommendations and analysis
 - **Trends data**: Historical tracking of cluster metrics
 
-## Updates
-
-```bash
-# Update dependencies
-uv sync
-
-# Update pyright
-pnpm add -g pyright@latest
-```
-
 ## Development
 
 See [docs/CODING_GUIDELINES.md](docs/CODING_GUIDELINES.md) for development standards and code quality tools.
@@ -70,10 +63,9 @@ See [docs/CODING_GUIDELINES.md](docs/CODING_GUIDELINES.md) for development stand
 **Quality checks:**
 
 ```bash
-uv run ruff format .     # Format code
-uv run ruff check .      # Lint code
-uv run python -m mypy .  # Type check
-pyright .                # Advanced type checking
+task lint
+task typecheck
+task fix
 ```
 
 ## Prerequisites
@@ -81,5 +73,4 @@ pyright .                # Advanced type checking
 - Python 3.12+
 - `kubectl` configured with cluster access
 - `uv` for dependency management
-- `pnpm` for Node.js packages (optional)
 - Kubernetes metrics-server (for real usage analysis)

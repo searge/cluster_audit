@@ -23,6 +23,12 @@ tasks:
     cmds:
       - uv run python resource_audit.py --mode extended
 
+  workload-efficiency:
+    desc: Generate workload resource efficiency CSV report
+    aliases: [we]
+    cmds:
+      - uv run python simple_resource_table.py
+
   rancher:
     desc: Run Rancher project analysis
     cmds:
