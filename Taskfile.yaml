@@ -34,6 +34,11 @@ tasks:
     cmds:
       - uv run python simple_rancher_analyzer.py
 
+  rancher-users:
+    desc: Map namespaces to Rancher projects and list project users
+    cmds:
+      - uv run python rancher_project_users.py --namespaces "{{.NAMESPACES | default .CLI_ARGS}}"
+
   rbac:
     desc: Run RBAC analysis
     cmds:
