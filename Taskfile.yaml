@@ -2,6 +2,9 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: "3"
 
+vars:
+  UV_ENV: "env VIRTUAL_ENV={{.PWD}}/.venv UV_CACHE_DIR=.uv-cache"
+
 tasks:
   default:
     desc: Show available tasks
@@ -11,61 +14,55 @@ tasks:
   install:
     desc: Install/update dependencies
     cmds:
-      - uv sync
+      - "{{.UV_ENV}} uv sync"
 
   audit:
     desc: Run standard audit
     cmds:
-      - uv run python resource_audit.py --mode current
+      - "{{.UV_ENV}} uv run python resource_audit.py --mode current"
 
   audit-extended:
     desc: Run extended operational audit
     cmds:
-      - uv run python resource_audit.py --mode extended
+      - "{{.UV_ENV}} uv run python resource_audit.py --mode extended"
 
   workload-efficiency:
     desc: Generate workload resource efficiency CSV report
     aliases: [we]
     cmds:
-      - uv run python simple_resource_table.py
+      - "{{.UV_ENV}} uv run python simple_resource_table.py"
 
   rancher:
     desc: Run Rancher project analysis
     cmds:
-      - uv run python simple_rancher_analyzer.py
+      - "{{.UV_ENV}} uv run python simple_rancher_analyzer.py"
 
   rancher-users:
     desc: Map namespaces to Rancher projects and list project users
     cmds:
-      - uv run python rancher_project_users.py --namespaces "{{.NAMESPACES | default .CLI_ARGS}}"
+      - "{{.UV_ENV}} uv run python rancher_project_users.py --namespaces \"{{.NAMESPACES | default .CLI_ARGS}}\""
 
   rbac:
     desc: Run RBAC analysis
     cmds:
-      - uv run python k8s_rbac_analyzer.py
+      - "{{.UV_ENV}} uv run python k8s_rbac_analyzer.py"
 
   dashboard:
     desc: Generate audit dashboard
     cmds:
-      - uv run python audit_dashboard.py
+      - "{{.UV_ENV}} uv run python audit_dashboard.py"
 
   lint:
     desc: Run code quality checks
     cmds:
-      - uv run ruff check .
-      - uv run ruff format --check .
+      - "{{.UV_ENV}} uv run ruff format ."
+      - "{{.UV_ENV}} uv run ruff check --fix ."
 
   typecheck:
     desc: Run type checking
     cmds:
-      - uv run python -m mypy .
-      - uv run pyright .
-
-  fix:
-    desc: Fix code formatting and linting issues
-    cmds:
-      - uv run ruff check --fix .
-      - uv run ruff format .
+      - "{{.UV_ENV}} uv run python -m mypy ."
+      - "{{.UV_ENV}} uv run pyright ."
 
   test:
     desc: Run all checks
