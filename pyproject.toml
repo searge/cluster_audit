@@ -5,10 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "dotenv>=0.9.9",
     "matplotlib>=3.10.5",
     "numpy>=2.3.2",
     "pandas>=2.3.1",
+    "python-dotenv>=1.2.1",
     "requests>=2.32.4",
     "seaborn>=0.13.2",
 ]
@@ -43,9 +43,6 @@ select = [
     "RET", # flake8-return
     "FURB", # refurb
 ]
-ignore = [
-    "E501", # line too long, handled by formatter
-]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -67,5 +64,4 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
-
 
