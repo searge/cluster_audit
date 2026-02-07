@@ -55,14 +55,16 @@ tasks:
   lint:
     desc: Run code quality checks
     cmds:
-      - "{{.UV_ENV}} uv run ruff format ."
-      - "{{.UV_ENV}} uv run ruff check --fix ."
+      - "{{.UV_ENV}} uv run ruff format {{.CLI_ARGS | default '.'}}"
+      - "{{.UV_ENV}} uv run ruff check --fix {{.CLI_ARGS | default '.'}}"
+      - "{{.UV_ENV}} uv run ty check {{.CLI_ARGS | default '.'}}"
+      - "{{.UV_ENV}} uv run pylint {{.CLI_ARGS | default '.'}} -j 0"
 
   typecheck:
     desc: Run type checking
     cmds:
-      - "{{.UV_ENV}} uv run python -m mypy ."
-      - "{{.UV_ENV}} uv run pyright ."
+      - "{{.UV_ENV}} uv run python -m mypy {{.CLI_ARGS | default '.'}}"
+      - "{{.UV_ENV}} uv run pyright {{.CLI_ARGS | default '.'}}"
 
   test:
     desc: Run all checks
