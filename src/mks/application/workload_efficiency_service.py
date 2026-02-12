@@ -1,32 +1,25 @@
 #!/usr/bin/env python3
 """
 Kubernetes Workload Resource Efficiency Table Generator
-Generates a table showing resource usage efficiency per workload (Deployment/StatefulSet/DaemonSet)
+Generates a table showing resource usage efficiency per workload
+(Deployment/StatefulSet/DaemonSet)
 """
 
 import csv
-import json
 import subprocess
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
-# Global configuration for skipped namespaces
-SKIPPED_NAMESPACES = {
-    "kube-system",
-    "kube-public",
-    "kube-node-lease",
-    "default",
-    "ingress-controller",
-    "cattle-system",
-    "rancher-system",
-}
+from mks.domain.namespace_policy import is_system_namespace
+from mks.domain.quantity_parser import parse_cpu, parse_memory
+from mks.infrastructure.kubectl_client import KubectlError, kubectl_json
+
+EXTRA_SYSTEM_NAMESPACES = frozenset({"cattle-system", "rancher-system"})
 
 
-@dataclass
-class WorkloadMetrics:
+class WorkloadMetrics(NamedTuple):
     """Resource metrics for a workload"""
 
     namespace: str
@@ -53,9 +46,6 @@ class WorkloadEfficiencyAnalyzer:
         self.timestamp = datetime.now()
         self.include_system = include_system
 
-        # Use global skipped namespaces configuration
-        self.system_namespaces = SKIPPED_NAMESPACES
-
         # Kind to short name mapping
         self.kind_short_names = {
             "Deployment": "deploy",
@@ -69,24 +59,17 @@ class WorkloadEfficiencyAnalyzer:
 
     def is_system_namespace(self, namespace: str) -> bool:
         """Check if namespace should be excluded from analysis"""
-        if self.include_system:
-            return False
-        return (
-            namespace in self.system_namespaces
-            or namespace.startswith("cattle-")
-            or namespace.startswith("rancher-")
-            or namespace.startswith("kube-")
+        return is_system_namespace(
+            namespace,
+            include_system=self.include_system,
+            extra_namespaces=EXTRA_SYSTEM_NAMESPACES,
         )
 
     def run_kubectl(self, command: str) -> dict[str, Any]:
         """Execute kubectl command and return JSON output"""
         try:
-            cmd = f"kubectl {command} -o json"
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, check=True
-            )
-            return json.loads(result.stdout)  # type: ignore[no-any-return]
-        except subprocess.CalledProcessError as e:
+            return kubectl_json(command)
+        except KubectlError as e:
             raise RuntimeError(f"Error running kubectl: {e}") from e
 
     def run_kubectl_top(self, command: str) -> list[str]:
@@ -99,49 +82,18 @@ class WorkloadEfficiencyAnalyzer:
             return result.stdout.strip().split("\n")
         except subprocess.CalledProcessError as e:
             print(
-                f"⚠️  Warning: kubectl top command failed (metrics-server may not be available): {e}"
+                "⚠️  Warning: kubectl top command failed "
+                f"(metrics-server may not be available): {e}"
             )
             return []
 
     def parse_cpu(self, cpu_str: str) -> int:
         """Parse CPU string to millicores"""
-        if not cpu_str or cpu_str == "0" or cpu_str == "<none>":
-            return 0
-
-        cpu_str = str(cpu_str).lower().strip()
-        if cpu_str.endswith("m"):
-            return int(float(cpu_str[:-1]))
-        if cpu_str.endswith("u"):
-            return int(float(cpu_str[:-1]) / 1000)
-        if cpu_str.endswith("n"):
-            return int(float(cpu_str[:-1]) / 1000000)
-        return int(float(cpu_str) * 1000)
+        return parse_cpu(cpu_str)
 
     def parse_memory(self, memory_str: str) -> int:
         """Parse memory string to MB"""
-        if not memory_str or memory_str == "0" or memory_str == "<none>":
-            return 0
-
-        memory_str = str(memory_str).upper().strip()
-        multipliers = {
-            "KI": 1024,
-            "K": 1000,
-            "MI": 1024**2,
-            "M": 1000**2,
-            "GI": 1024**3,
-            "G": 1000**3,
-            "TI": 1024**4,
-            "T": 1000**4,
-        }
-
-        for suffix, multiplier in multipliers.items():
-            if memory_str.endswith(suffix):
-                bytes_value = int(float(memory_str[: -len(suffix)]) * multiplier)
-                return int(bytes_value / (1024 * 1024))  # Convert to MB
-
-        if memory_str.isdigit():
-            return int(int(memory_str) / (1024 * 1024))  # Assume bytes, convert to MB
-        return 0
+        return int(parse_memory(memory_str) / (1024 * 1024))
 
     def get_pod_specs(self) -> dict[str, Any]:
         """Get resource specs for all pods"""
@@ -196,98 +148,111 @@ class WorkloadEfficiencyAnalyzer:
                     deployment_name = rs_owner_refs[0].get("name")
                     if deployment_name:
                         return deployment_name, "deploy"
-            except Exception:
+            except (RuntimeError, KeyError, TypeError):
                 pass
 
         # Return the short name for the kind
         short_name = self.kind_short_names.get(owner_kind) or owner_kind.lower()
         return owner_name, short_name
 
+    def _collect_workload_groups(
+        self, pods_data: dict[str, Any], usage_data: dict[str, dict[str, int]]
+    ) -> defaultdict[str, list[dict[str, Any]]]:
+        """Group runnable non-system pods by workload key."""
+        workload_pods: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for pod in pods_data.get("items", []):
+            namespace = pod["metadata"]["namespace"]
+            if self.is_system_namespace(namespace):
+                continue
+            if pod["status"]["phase"] != "Running":
+                continue
+
+            pod_name = pod["metadata"]["name"]
+            pod_key = f"{namespace}/{pod_name}"
+            workload_name, workload_type = self.get_workload_from_owner_ref(pod)
+            workload_key = f"{namespace}/{workload_name}/{workload_type}"
+            workload_pods[workload_key].append(
+                {"pod": pod, "usage": usage_data.get(pod_key, {"cpu": 0, "memory": 0})}
+            )
+        return workload_pods
+
+    def _build_workload_metric(
+        self,
+        workload_key: str,
+        pods: list[dict[str, Any]],
+    ) -> WorkloadMetrics:
+        """Aggregate pod-level resources into one workload-level metric."""
+        namespace, workload_name, workload_type = workload_key.split("/", 2)
+        totals = self._aggregate_workload_totals(pods)
+
+        cpu_eff = (
+            (totals["cpu_use"] / totals["cpu_req"] * 100)
+            if totals["cpu_req"] > 0
+            else 0
+        )
+        mem_eff = (
+            (totals["mem_use"] / totals["mem_req"] * 100)
+            if totals["mem_req"] > 0
+            else 0
+        )
+        cpu_waste = int(max(0, totals["cpu_req"] - totals["cpu_use"]))
+        mem_waste = int(max(0, totals["mem_req"] - totals["mem_use"]))
+        return WorkloadMetrics(
+            namespace=namespace,
+            workload=workload_name,
+            workload_type=workload_type,
+            cpu_req=int(totals["cpu_req"]),
+            cpu_lim=int(totals["cpu_lim"]),
+            cpu_use=int(totals["cpu_use"]),
+            cpu_eff=cpu_eff,
+            cpu_waste=cpu_waste,
+            mem_req=int(totals["mem_req"]),
+            mem_lim=int(totals["mem_lim"]),
+            mem_use=int(totals["mem_use"]),
+            mem_eff=mem_eff,
+            mem_waste=mem_waste,
+        )
+
+    def _aggregate_workload_totals(
+        self,
+        pods: list[dict[str, Any]],
+    ) -> dict[str, float]:
+        """Accumulate requests, limits, and usage across pods in one workload."""
+        totals: dict[str, float] = {
+            "cpu_req": 0,
+            "cpu_lim": 0,
+            "cpu_use": 0,
+            "mem_req": 0,
+            "mem_lim": 0,
+            "mem_use": 0,
+        }
+        for pod_data in pods:
+            pod = pod_data["pod"]
+            usage = pod_data["usage"]
+            for container in pod["spec"]["containers"]:
+                resources = container.get("resources", {})
+                requests = resources.get("requests", {})
+                limits = resources.get("limits", {})
+                totals["cpu_req"] += self.parse_cpu(requests.get("cpu", "0"))
+                totals["cpu_lim"] += self.parse_cpu(limits.get("cpu", "0"))
+                totals["mem_req"] += self.parse_memory(requests.get("memory", "0"))
+                totals["mem_lim"] += self.parse_memory(limits.get("memory", "0"))
+            totals["cpu_use"] += usage["cpu"]
+            totals["mem_use"] += usage["memory"]
+        return totals
+
     def analyze_workloads(self) -> list[WorkloadMetrics]:
         """Analyze workload efficiency by aggregating pod data"""
         pods_data = self.get_pod_specs()
         usage_data = self.get_pod_usage()
-
-        # Group pods by workload
-        workload_pods = defaultdict(list)
-
         print("🔄 Aggregating pods by workload...")
-        for pod in pods_data.get("items", []):
-            namespace = pod["metadata"]["namespace"]
-            pod_name = pod["metadata"]["name"]
-            pod_key = f"{namespace}/{pod_name}"
-
-            # Skip system namespaces unless requested
-            if self.is_system_namespace(namespace):
-                continue
-
-            # Only analyze running pods
-            if pod["status"]["phase"] != "Running":
-                continue
-
-            workload_name, workload_type = self.get_workload_from_owner_ref(pod)
-            workload_key = f"{namespace}/{workload_name}/{workload_type}"
-
-            workload_pods[workload_key].append(
-                {"pod": pod, "usage": usage_data.get(pod_key, {"cpu": 0, "memory": 0})}
-            )
+        workload_pods = self._collect_workload_groups(pods_data, usage_data)
 
         # Calculate metrics per workload
-        workload_metrics = []
-        for workload_key, pods in workload_pods.items():
-            namespace, workload_name, workload_type = workload_key.split("/", 2)
-
-            # Aggregate resources across all pods in workload
-            total_cpu_req = 0
-            total_cpu_lim = 0
-            total_cpu_use = 0
-            total_mem_req = 0
-            total_mem_lim = 0
-            total_mem_use = 0
-
-            for pod_data in pods:
-                pod = pod_data["pod"]
-                usage = pod_data["usage"]
-
-                # Sum container resources
-                for container in pod["spec"]["containers"]:
-                    resources = container.get("resources", {})
-                    requests = resources.get("requests", {})
-                    limits = resources.get("limits", {})
-
-                    total_cpu_req += self.parse_cpu(requests.get("cpu", "0"))
-                    total_cpu_lim += self.parse_cpu(limits.get("cpu", "0"))
-                    total_mem_req += self.parse_memory(requests.get("memory", "0"))
-                    total_mem_lim += self.parse_memory(limits.get("memory", "0"))
-
-                # Add usage (per pod, not per container)
-                total_cpu_use += usage["cpu"]
-                total_mem_use += usage["memory"]
-
-            # Calculate efficiency and waste
-            cpu_eff = (total_cpu_use / total_cpu_req * 100) if total_cpu_req > 0 else 0
-            mem_eff = (total_mem_use / total_mem_req * 100) if total_mem_req > 0 else 0
-
-            cpu_waste = max(0, total_cpu_req - total_cpu_use)
-            mem_waste = max(0, total_mem_req - total_mem_use)
-
-            workload_metrics.append(
-                WorkloadMetrics(
-                    namespace=namespace,
-                    workload=workload_name,
-                    workload_type=workload_type,
-                    cpu_req=total_cpu_req,
-                    cpu_lim=total_cpu_lim,
-                    cpu_use=total_cpu_use,
-                    cpu_eff=cpu_eff,
-                    cpu_waste=cpu_waste,
-                    mem_req=total_mem_req,
-                    mem_lim=total_mem_lim,
-                    mem_use=total_mem_use,
-                    mem_eff=mem_eff,
-                    mem_waste=mem_waste,
-                )
-            )
+        workload_metrics = [
+            self._build_workload_metric(workload_key, pods)
+            for workload_key, pods in workload_pods.items()
+        ]
 
         # Sort by highest CPU waste first
         return sorted(workload_metrics, key=lambda x: x.cpu_waste, reverse=True)
@@ -430,10 +395,12 @@ class WorkloadEfficiencyAnalyzer:
         print("\n📊 SUMMARY STATISTICS")
         print(f"   Total Workloads: {len(metrics)}")
         print(
-            f"   Total CPU Waste: {total_cpu_waste:,} millicores ({total_cpu_waste / 1000:.1f} cores)"
+            f"   Total CPU Waste: {total_cpu_waste:,} millicores "
+            f"({total_cpu_waste / 1000:.1f} cores)"
         )
         print(
-            f"   Total Memory Waste: {total_mem_waste:,} MB ({total_mem_waste / 1024:.1f} GB)"
+            f"   Total Memory Waste: {total_mem_waste:,} MB "
+            f"({total_mem_waste / 1024:.1f} GB)"
         )
         print(f"   Average CPU Efficiency: {avg_cpu_eff:.1f}%")
         print(f"   Average Memory Efficiency: {avg_mem_eff:.1f}%")
@@ -469,7 +436,7 @@ class WorkloadEfficiencyAnalyzer:
             print(f"\n✅ Analysis completed! Found {len(metrics)} workloads.")
 
         except KeyboardInterrupt:
-            raise RuntimeError("Analysis interrupted by user")
+            raise RuntimeError("Analysis interrupted by user") from None
         except Exception as e:
             raise RuntimeError(f"Error during analysis: {e}") from e
 

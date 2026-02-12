@@ -3,7 +3,7 @@
 import json
 import shlex
 import subprocess
-from typing import Any
+from typing import Any, cast
 
 
 class KubectlError(RuntimeError):
@@ -32,7 +32,7 @@ def kubectl_json(command: str, *, append_json_output: bool = True) -> dict[str, 
     """Execute kubectl command and parse JSON output."""
     result = _run_kubectl(command, append_json_output=append_json_output)
     try:
-        return json.loads(result.stdout)  # type: ignore[no-any-return]
+        return cast(dict[str, Any], json.loads(result.stdout) if result.stdout else {})
     except json.JSONDecodeError as exc:
         raise KubectlError(f"kubectl returned invalid JSON: {exc}") from exc
 
@@ -41,3 +41,12 @@ def kubectl_text(command: str) -> str:
     """Execute kubectl command and return text output."""
     result = _run_kubectl(command, append_json_output=False)
     return result.stdout
+
+
+def kubectl_json_or_empty(command: str) -> dict[str, Any]:
+    """Execute kubectl JSON command and return empty payload on failure."""
+    try:
+        return kubectl_json(command)
+    except KubectlError as exc:
+        print(f"❌ Error running kubectl: {exc}")
+        return {}

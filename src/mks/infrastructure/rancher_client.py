@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -11,19 +12,32 @@ class RancherApiError(RuntimeError):
     """Rancher API request failed."""
 
 
+@dataclass(frozen=True)
+class RancherAuth:
+    """Authentication material for Rancher API."""
+
+    token: str | None = None
+    ak: str | None = None
+    sk: str | None = None
+
+
+@dataclass(frozen=True)
+class RancherClientConfig:
+    """Runtime tuning options for Rancher API calls."""
+
+    timeout_seconds: float = 30.0
+    max_retries: int = 2
+    retry_base_delay_seconds: float = 0.3
+
+
 class RancherClient:
     """Rancher API client with Bearer and Basic auth support."""
 
     def __init__(
         self,
         base_url: str,
-        token: str | None = None,
-        ak: str | None = None,
-        sk: str | None = None,
-        *,
-        timeout_seconds: float = 30.0,
-        max_retries: int = 2,
-        retry_base_delay_seconds: float = 0.3,
+        auth: RancherAuth,
+        config: RancherClientConfig | None = None,
     ) -> None:
         """Create Rancher API client.
 
@@ -31,26 +45,14 @@ class RancherClient:
         ----------
         base_url : str
             Rancher base URL.
-        token : str | None
-            Bearer token.
-        ak : str | None
-            Access key for basic auth fallback.
-        sk : str | None
-            Secret key for basic auth fallback.
-        timeout_seconds : float
-            Request timeout.
-        max_retries : int
-            Retry count for transient failures.
-        retry_base_delay_seconds : float
-            Base delay for exponential backoff.
+        auth : RancherAuth
+            Auth credentials (token and/or access key pair).
+        config : RancherClientConfig | None
+            Runtime tuning options.
         """
         self.base_url = base_url.rstrip("/")
-        self.token = token
-        self.ak = ak
-        self.sk = sk
-        self.timeout_seconds = timeout_seconds
-        self.max_retries = max_retries
-        self.retry_base_delay_seconds = retry_base_delay_seconds
+        self.auth = auth
+        self.config = config or RancherClientConfig()
         self._client: httpx.AsyncClient | None = None
         self._default_headers = {"Accept": "application/json"}
 
@@ -71,15 +73,17 @@ class RancherClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
-                timeout=self.timeout_seconds,
+                timeout=self.config.timeout_seconds,
             )
         return self._client
 
     def _auth_header(self, *, force_basic: bool = False) -> str | None:
-        if not force_basic and self.token:
-            return f"Bearer {self.token}"
-        if self.ak and self.sk:
-            cred = base64.b64encode(f"{self.ak}:{self.sk}".encode()).decode("utf-8")
+        if not force_basic and self.auth.token:
+            return f"Bearer {self.auth.token}"
+        if self.auth.ak and self.auth.sk:
+            cred = base64.b64encode(f"{self.auth.ak}:{self.auth.sk}".encode()).decode(
+                "utf-8"
+            )
             return f"Basic {cred}"
         return None
 
@@ -107,17 +111,21 @@ class RancherClient:
         """
         client = await self._ensure_client()
         last_exc: Exception | None = None
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(self.config.max_retries + 1):
             try:
                 response = await client.get(path, params=params, headers=headers)
-                if response.status_code >= 500 and attempt < self.max_retries:
-                    await asyncio.sleep(self.retry_base_delay_seconds * (2**attempt))
+                if response.status_code >= 500 and attempt < self.config.max_retries:
+                    await asyncio.sleep(
+                        self.config.retry_base_delay_seconds * (2**attempt)
+                    )
                     continue
                 return response
             except httpx.HTTPError as exc:
                 last_exc = exc
-                if attempt < self.max_retries:
-                    await asyncio.sleep(self.retry_base_delay_seconds * (2**attempt))
+                if attempt < self.config.max_retries:
+                    await asyncio.sleep(
+                        self.config.retry_base_delay_seconds * (2**attempt)
+                    )
                     continue
                 break
         raise RancherApiError(f"Rancher API request failed: {last_exc}") from last_exc
@@ -145,7 +153,12 @@ class RancherClient:
             headers["Authorization"] = auth_header
 
         response = await self._get_with_retries(path, params, headers)
-        if response.status_code == 401 and self.token and self.ak and self.sk:
+        if (
+            response.status_code == 401
+            and self.auth.token
+            and self.auth.ak
+            and self.auth.sk
+        ):
             retry_headers = dict(self._default_headers)
             retry_headers["Authorization"] = self._auth_header(force_basic=True) or ""
             response = await self._get_with_retries(path, params, retry_headers)

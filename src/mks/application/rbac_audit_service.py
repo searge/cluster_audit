@@ -5,7 +5,7 @@ Analyzes users, service accounts, and access patterns in plain Kubernetes
 """
 
 import re
-from collections import defaultdict
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +14,7 @@ from typing import Any
 import pandas as pd
 
 from mks.domain.namespace_policy import is_system_namespace
+from mks.domain.pod_reporting import count_pods_by_namespace, health_status_for_failed
 from mks.infrastructure.kubectl_client import KubectlError, kubectl_json
 
 
@@ -41,6 +42,8 @@ class ProjectGroup:
 
 
 class K8sRBACAnalyzer:
+    """Analyze RBAC bindings and infer project-level access groupings."""
+
     def __init__(self, data_dir: str = "reports"):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(exist_ok=True)
@@ -246,27 +249,10 @@ class K8sRBACAnalyzer:
         pods = self.run_kubectl("get pods -A")
         if not pods:
             return {}
-
-        ns_stats: dict[str, dict[str, int]] = defaultdict(
-            lambda: {"running": 0, "total": 0, "failed": 0, "pending": 0}
+        return count_pods_by_namespace(
+            pods,
+            namespace_filter=lambda namespace: namespace not in self.system_namespaces,
         )
-
-        for pod in pods.get("items", []):
-            namespace = pod["metadata"]["namespace"]
-            phase = pod["status"]["phase"]
-
-            if namespace in self.system_namespaces:
-                continue
-
-            ns_stats[namespace]["total"] += 1
-            if phase == "Running":
-                ns_stats[namespace]["running"] += 1
-            elif phase == "Failed":
-                ns_stats[namespace]["failed"] += 1
-            elif phase == "Pending":
-                ns_stats[namespace]["pending"] += 1
-
-        return dict(ns_stats)
 
     def map_users_to_projects(
         self, projects: dict[str, ProjectGroup], users: dict[str, UserAccess]
@@ -305,9 +291,60 @@ class K8sRBACAnalyzer:
     ) -> None:
         """Generate comprehensive reports"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        project_data = self._build_project_rows(projects, pod_stats)
+        user_data = self._build_user_rows(users)
+        namespace_data = self._build_namespace_rows(projects, pod_stats)
 
-        # Project summary report
-        project_data = []
+        if project_data:
+            projects_file = self.data_dir / f"k8s_projects_{timestamp}.csv"
+            self._write_sorted_csv(
+                project_data,
+                projects_file,
+                sort_by=["total_pods"],
+                ascending=[False],
+            )
+            print(f"📊 Projects report: {projects_file}")
+
+        if user_data:
+            users_file = self.data_dir / f"k8s_user_access_{timestamp}.csv"
+            self._write_sorted_csv(
+                user_data,
+                users_file,
+                sort_by=["type", "namespace_count"],
+                ascending=[True, False],
+            )
+            print(f"👥 User access report: {users_file}")
+
+        if namespace_data:
+            ns_file = self.data_dir / f"k8s_namespaces_{timestamp}.csv"
+            self._write_sorted_csv(
+                namespace_data,
+                ns_file,
+                sort_by=["project", "total_pods"],
+                ascending=[True, False],
+            )
+            print(f"📋 Namespace details: {ns_file}")
+
+    @staticmethod
+    def _write_sorted_csv(
+        rows: list[dict[str, Any]],
+        file_path: Path,
+        *,
+        sort_by: list[str],
+        ascending: list[bool],
+    ) -> None:
+        """Persist rows to CSV using a deterministic sort order."""
+        df = pd.DataFrame(rows)
+        df = df.sort_values(sort_by, ascending=ascending)
+        df.to_csv(file_path, index=False)
+
+    @staticmethod
+    def _build_project_rows(
+        projects: dict[str, ProjectGroup],
+        pod_stats: dict[str, dict[str, int]],
+    ) -> list[dict[str, Any]]:
+        """Build per-project summary rows."""
+        rows: list[dict[str, Any]] = []
         for project_name, project in projects.items():
             total_pods = sum(
                 pod_stats.get(ns, {}).get("total", 0) for ns in project.namespaces
@@ -319,7 +356,7 @@ class K8sRBACAnalyzer:
                 pod_stats.get(ns, {}).get("failed", 0) for ns in project.namespaces
             )
 
-            project_data.append(
+            rows.append(
                 {
                     "project_name": project_name,
                     "pattern": project.pattern,
@@ -332,23 +369,15 @@ class K8sRBACAnalyzer:
                     "total_pods": total_pods,
                     "running_pods": running_pods,
                     "failed_pods": failed_pods,
-                    "health_status": "🟢 Healthy"
-                    if failed_pods == 0
-                    else "🟡 Issues"
-                    if failed_pods < 5
-                    else "🔴 Problems",
+                    "health_status": health_status_for_failed(failed_pods),
                 }
             )
+        return rows
 
-        if project_data:
-            df_projects = pd.DataFrame(project_data)
-            df_projects = df_projects.sort_values("total_pods", ascending=False)
-            projects_file = self.data_dir / f"k8s_projects_{timestamp}.csv"
-            df_projects.to_csv(projects_file, index=False)
-            print(f"📊 Projects report: {projects_file}")
-
-        # User access report
-        user_data = []
+    @staticmethod
+    def _build_user_rows(users: dict[str, UserAccess]) -> list[dict[str, Any]]:
+        """Build per-user access rows for reporting."""
+        rows: list[dict[str, Any]] = []
         for _user_key, user_access in users.items():
             # Skip system users
             if any(
@@ -357,7 +386,7 @@ class K8sRBACAnalyzer:
             ):
                 continue
 
-            user_data.append(
+            rows.append(
                 {
                     "username": user_access.username,
                     "type": user_access.subject_type,
@@ -370,22 +399,19 @@ class K8sRBACAnalyzer:
                     or "",
                 }
             )
+        return rows
 
-        if user_data:
-            df_users = pd.DataFrame(user_data)
-            df_users = df_users.sort_values(
-                ["type", "namespace_count"], ascending=[True, False]
-            )
-            users_file = self.data_dir / f"k8s_user_access_{timestamp}.csv"
-            df_users.to_csv(users_file, index=False)
-            print(f"👥 User access report: {users_file}")
-
-        # Namespace details report
-        namespace_data = []
+    @staticmethod
+    def _build_namespace_rows(
+        projects: dict[str, ProjectGroup],
+        pod_stats: dict[str, dict[str, int]],
+    ) -> list[dict[str, Any]]:
+        """Build per-namespace project attribution rows."""
+        rows: list[dict[str, Any]] = []
         for project_name, project in projects.items():
             for ns in project.namespaces:
                 stats = pod_stats.get(ns, {})
-                namespace_data.append(
+                rows.append(
                     {
                         "namespace": ns,
                         "project": project_name,
@@ -398,15 +424,7 @@ class K8sRBACAnalyzer:
                         "service_accounts": ", ".join(project.service_accounts),
                     }
                 )
-
-        if namespace_data:
-            df_namespaces = pd.DataFrame(namespace_data)
-            df_namespaces = df_namespaces.sort_values(
-                ["project", "total_pods"], ascending=[True, False]
-            )
-            ns_file = self.data_dir / f"k8s_namespaces_{timestamp}.csv"
-            df_namespaces.to_csv(ns_file, index=False)
-            print(f"📋 Namespace details: {ns_file}")
+        return rows
 
     def print_summary(
         self,
@@ -433,7 +451,8 @@ class K8sRBACAnalyzer:
         print("📊 Overview:")
         print(f"   • Detected Projects: {len(projects)}")
         print(
-            f"   • Total Namespaces: {sum(len(p.namespaces) for p in projects.values())}"
+            "   • Total Namespaces: "
+            f"{sum(len(p.namespaces) for p in projects.values())}"
         )
         print(f"   • Total Pods: {total_pods}")
         print(f"   • Human Users: {len(real_users)}")
@@ -520,10 +539,8 @@ class K8sRBACAnalyzer:
             # Print summary
             self.print_summary(projects, users, pod_stats)
 
-        except Exception as e:
+        except (RuntimeError, ValueError, KeyError, KubectlError) as e:
             print(f"❌ Analysis failed: {e}")
-            import traceback
-
             traceback.print_exc()
 
 

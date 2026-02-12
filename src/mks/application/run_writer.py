@@ -30,6 +30,16 @@ class RunContext:
     inputs: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class SummaryContent:
+    """Summary payload used to build summary markdown."""
+
+    title: str
+    key_findings: list[str] | None = None
+    warnings: list[str] | None = None
+    inputs: dict[str, Any] | None = None
+
+
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -100,18 +110,15 @@ def finalize_run(
 
 
 def build_summary_lines(
-    *,
-    title: str,
+    content: SummaryContent,
     capability: str,
-    inputs: dict[str, Any],
     output_files: tuple[Path, ...],
-    key_findings: list[str] | None = None,
-    warnings: list[str] | None = None,
 ) -> list[str]:
     """Build standardized summary markdown lines."""
+    inputs = content.inputs or {}
     rel_outputs = [str(p.name) for p in output_files]
 
-    lines = [f"# {title}", "", "## Inputs"]
+    lines = [f"# {content.title}", "", "## Inputs"]
     if inputs:
         for key in sorted(inputs):
             lines.append(f"- `{key}`: `{inputs[key]}`")
@@ -127,14 +134,14 @@ def build_summary_lines(
         lines.append("- `artifacts`: (none)")
 
     lines.extend(["", "## Key Findings"])
-    if key_findings:
-        lines.extend(f"- {item}" for item in key_findings)
+    if content.key_findings:
+        lines.extend(f"- {item}" for item in content.key_findings)
     else:
         lines.append("- No additional findings were recorded.")
 
     lines.extend(["", "## Warnings"])
-    if warnings:
-        lines.extend(f"- {item}" for item in warnings)
+    if content.warnings:
+        lines.extend(f"- {item}" for item in content.warnings)
     else:
         lines.append("- None.")
 

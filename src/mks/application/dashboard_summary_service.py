@@ -8,12 +8,12 @@ Follows functional paradigm with dataclasses for data structures
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 
 
-@dataclass(frozen=True)
-class AuditConfig:
+class AuditConfig(NamedTuple):
     """Configuration for audit dashboard analysis"""
 
     data_dir: Path
@@ -51,8 +51,7 @@ class EfficiencyDistribution:
     total: int
 
 
-@dataclass(frozen=True)
-class CurrentState:
+class CurrentState(NamedTuple):
     """Current state metrics"""
 
     total_pods: int
@@ -121,7 +120,7 @@ def load_usage_data(
 
     try:
         return pd.read_csv(usage_file_path)
-    except Exception as e:
+    except (OSError, ValueError, KeyError, pd.errors.ParserError) as e:
         print(f"⚠️  Could not load usage data: {e}")
         return None
 
@@ -283,7 +282,9 @@ def print_trends_analysis(trends_summary: TrendsSummary) -> None:
     """Print trends analysis"""
     print("📈 Trends Analysis (Last 7 days):")
     print(
-        f"  • Issues trend: {trends_summary.trend_icon} {trends_summary.issue_change:+d} containers"
+        "  • Issues trend: "
+        f"{trends_summary.trend_icon} "
+        f"{trends_summary.issue_change:+d} containers"
     )
     print(f"  • Pod growth: {trends_summary.pod_change:+d} pods")
     print(f"  • CPU overcommit: {trends_summary.cpu_change:+.1f}% change")
@@ -340,7 +341,8 @@ def print_efficiency_distribution(distribution: EfficiencyDistribution) -> None:
     """Print CPU efficiency distribution"""
     print("📊 CPU EFFICIENCY DISTRIBUTION:")
     print(
-        f"  • Idle (0%): {distribution.idle} pods ({distribution.idle / distribution.total * 100:.1f}%)"
+        f"  • Idle (0%): {distribution.idle} pods "
+        f"({distribution.idle / distribution.total * 100:.1f}%)"
     )
     print(
         f"  • Very Wasteful (<20%): {distribution.very_wasteful} pods "
@@ -366,12 +368,14 @@ def print_namespace_waste(significant_waste: pd.DataFrame) -> None:
     if not significant_waste.empty:
         print("🏢 NAMESPACE WASTE ANALYSIS:")
         print(
-            f"{'Namespace':<30} {'CPU Waste(m)':<12} {'Efficiency':<12} {'Memory Waste(MB)':<15}"
+            f"{'Namespace':<30} {'CPU Waste(m)':<12} "
+            f"{'Efficiency':<12} {'Memory Waste(MB)':<15}"
         )
         print("-" * 75)
         for ns, row in significant_waste.iterrows():
             print(
-                f"{ns:<30} {row['cpu_request_waste_m']:<12} {row['efficiency_pct']:.1f}%{'':<8} "
+                f"{ns:<30} {row['cpu_request_waste_m']:<12} "
+                f"{row['efficiency_pct']:.1f}%{'':<8} "
                 f"{row['memory_request_waste_mb']:<15}"
             )
         print()
@@ -412,7 +416,8 @@ def print_nodes_analysis(df: pd.DataFrame) -> None:
     )
 
     print(
-        f"{'Node Type':<20} {'Pods':<6} {'CPU Req(m)':<12} {'CPU Lim(m)':<12} {'Issues':<8}"
+        f"{'Node Type':<20} {'Pods':<6} {'CPU Req(m)':<12} "
+        f"{'CPU Lim(m)':<12} {'Issues':<8}"
     )
     print("-" * 65)
 
@@ -424,7 +429,7 @@ def print_nodes_analysis(df: pd.DataFrame) -> None:
     print()
 
 
-def print_pod_density_analysis(df: pd.DataFrame, config: AuditConfig) -> None:  # noqa: ARG001
+def print_pod_density_analysis(df: pd.DataFrame, _config: AuditConfig) -> None:
     """Print pod density analysis with nodes approaching limits"""
     print("🏗️  Pod Density Analysis:")
 
@@ -435,7 +440,8 @@ def print_pod_density_analysis(df: pd.DataFrame, config: AuditConfig) -> None:  
         for _, node in critical_nodes.iterrows():
             print(
                 f"    • {node['node_name']} ({node['node_type']}): "
-                f"{node['total_pods']}/{node['pod_capacity']} pods ({node['pod_utilization_pct']}%)"
+                f"{node['total_pods']}/{node['pod_capacity']} pods "
+                f"({node['pod_utilization_pct']}%)"
             )
         print()
 
@@ -456,7 +462,8 @@ def print_pod_density_analysis(df: pd.DataFrame, config: AuditConfig) -> None:  
 
     print("  📊 Summary by Node Type:")
     print(
-        f"{'Node Type':<20} {'Pods':<8} {'Capacity':<10} {'Usage%':<8} {'Failed':<8} {'Pending':<8}"
+        f"{'Node Type':<20} {'Pods':<8} {'Capacity':<10} "
+        f"{'Usage%':<8} {'Failed':<8} {'Pending':<8}"
     )
     print("-" * 70)
 
@@ -485,30 +492,39 @@ def print_namespace_efficiency(df: pd.DataFrame, config: AuditConfig) -> None:
         return
 
     print(
-        f"{'Namespace':<30} {'CPU Waste(m)':<12} {'Memory Waste(MB)':<15} {'Efficiency':<10} {'Priority':<8}"
+        f"{'Namespace':<30} {'CPU Waste(m)':<12} {'Memory Waste(MB)':<15} "
+        f"{'Efficiency':<10} {'Priority':<8}"
     )
     print("-" * 85)
 
     for _, ns in top_wasters.iterrows():
         print(
             f"{ns['namespace']:<30} {ns['cpu_waste_potential_m']:<12} "
-            f"{ns['memory_waste_potential_mb']:<15} {ns['efficiency_score']}%{'':<6} {ns['waste_priority']:<8}"
+            f"{ns['memory_waste_potential_mb']:<15} "
+            f"{ns['efficiency_score']}%{'':<6} {ns['waste_priority']:<8}"
         )
 
     # Summary statistics
-    total_waste_cpu = df["cpu_waste_potential_m"].sum()
-    total_waste_memory = df["memory_waste_potential_mb"].sum()
+    total_waste_cpu_values = pd.to_numeric(df["cpu_waste_potential_m"]).to_numpy(
+        dtype=float
+    )
+    total_waste_memory_values = pd.to_numeric(df["memory_waste_potential_mb"]).to_numpy(
+        dtype=float
+    )
+    total_waste_cpu = float(total_waste_cpu_values.sum())
+    total_waste_memory = float(total_waste_memory_values.sum())
     high_priority_count = len(df[df["waste_priority"] == "HIGH"])
 
     print()
     print(
-        f"  📊 Waste Summary: {total_waste_cpu:.0f}m CPU, {total_waste_memory:.0f}MB memory wasted"
+        f"  📊 Waste Summary: {total_waste_cpu:.0f}m CPU, "
+        f"{total_waste_memory:.0f}MB memory wasted"
     )
     print(f"  🚨 High priority namespaces: {high_priority_count}")
     print()
 
 
-def print_scheduling_issues(df: pd.DataFrame, config: AuditConfig) -> None:  # noqa: ARG001
+def print_scheduling_issues(df: pd.DataFrame, _config: AuditConfig) -> None:
     """Print scheduling issues analysis"""
     if df.empty:
         print("✅ No scheduling issues detected")
@@ -526,7 +542,8 @@ def print_scheduling_issues(df: pd.DataFrame, config: AuditConfig) -> None:  # n
 
     print(
         f"  ⚡ Severity: Critical={severity_counts.get('CRITICAL', 0)}, "
-        f"High={severity_counts.get('HIGH', 0)}, Medium={severity_counts.get('MEDIUM', 0)}"
+        f"High={severity_counts.get('HIGH', 0)}, "
+        f"Medium={severity_counts.get('MEDIUM', 0)}"
     )
     print()
 
@@ -625,7 +642,8 @@ def cleanup_old_files(config: AuditConfig) -> int:
 
     if deleted_count > 0:
         print(
-            f"🗑️  Cleaned up {deleted_count} old files (older than {config.default_keep_days} days)"
+            f"🗑️  Cleaned up {deleted_count} old files "
+            f"(older than {config.default_keep_days} days)"
         )
 
     return deleted_count

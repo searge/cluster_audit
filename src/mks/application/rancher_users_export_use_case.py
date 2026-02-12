@@ -13,12 +13,15 @@ from mks.application.rancher_users_export_service import (
 )
 from mks.application.run_writer import (
     RunResult,
-    build_summary_lines,
+    SummaryContent,
     create_run,
-    finalize_run,
     list_output_files,
 )
 from mks.application.stdout_renderer import render_stdout_report
+from mks.application.use_case_utils import (
+    finalize_success_run,
+    render_stdout_with_tempdir,
+)
 
 
 def execute_rancher_users_export(
@@ -30,21 +33,16 @@ def execute_rancher_users_export(
 ) -> RunResult | None:
     """Execute Rancher users export."""
     if reports_root is None:
-        with TemporaryDirectory(prefix="mks_rancher_users_") as tmp_dir:
-            buffer = StringIO()
-            with redirect_stdout(buffer):
-                _service(
-                    namespaces_raw,
-                    data_dir=tmp_dir,
-                    cache_dir=cache_dir,
-                    cache_ttl_seconds=cache_ttl_seconds,
-                )
-            output_files = list_output_files(Path(tmp_dir))
-            render_stdout_report(
-                title="Rancher Users Export",
-                captured_stdout=buffer.getvalue(),
-                output_files=output_files,
-            )
+        render_stdout_with_tempdir(
+            title="Rancher Users Export",
+            temp_prefix="mks_rancher_users_",
+            runner=lambda tmp_dir: _service(
+                namespaces_raw,
+                data_dir=tmp_dir,
+                cache_dir=cache_dir,
+                cache_ttl_seconds=cache_ttl_seconds,
+            ),
+        )
         return None
 
     ctx = create_run(
@@ -62,22 +60,16 @@ def execute_rancher_users_export(
         cache_dir=cache_dir,
         cache_ttl_seconds=cache_ttl_seconds,
     )
-    output_files = list_output_files(ctx.output_dir)
-    summary = build_summary_lines(
-        title="Rancher Users Export",
-        capability=ctx.capability,
-        inputs=ctx.inputs,
-        output_files=output_files,
-        key_findings=[
-            f"CSV generated: `{Path(out_file).name}`.",
-            "Async requests + disk cache used for project/user lookups.",
-        ],
-    )
-    return finalize_run(
+    return finalize_success_run(
         ctx,
-        status="success",
-        output_files=output_files,
-        summary_lines=summary,
+        summary=SummaryContent(
+            title="Rancher Users Export",
+            key_findings=[
+                f"CSV generated: `{Path(out_file).name}`.",
+                "Async requests + disk cache used for project/user lookups.",
+            ],
+            inputs=ctx.inputs,
+        ),
     )
 
 
@@ -122,22 +114,16 @@ async def execute_rancher_users_export_async(
         cache_dir=cache_dir,
         cache_ttl_seconds=cache_ttl_seconds,
     )
-    output_files = list_output_files(ctx.output_dir)
-    summary = build_summary_lines(
-        title="Rancher Users Export (Async)",
-        capability=ctx.capability,
-        inputs=ctx.inputs,
-        output_files=output_files,
-        key_findings=[
-            f"CSV generated: `{Path(out_file).name}`.",
-            "Async requests + disk cache used for project/user lookups.",
-        ],
-    )
-    return finalize_run(
+    return finalize_success_run(
         ctx,
-        status="success",
-        output_files=output_files,
-        summary_lines=summary,
+        summary=SummaryContent(
+            title="Rancher Users Export (Async)",
+            key_findings=[
+                f"CSV generated: `{Path(out_file).name}`.",
+                "Async requests + disk cache used for project/user lookups.",
+            ],
+            inputs=ctx.inputs,
+        ),
     )
 
 

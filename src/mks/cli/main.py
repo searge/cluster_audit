@@ -65,7 +65,10 @@ def audit_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout preview only.",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
     ),
 ) -> None:
     """Snapshot cluster resources.
@@ -77,7 +80,7 @@ def audit_command(
         run = execute_resource_audit(mode=mode, reports_root=report)
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 
@@ -92,7 +95,10 @@ def workload_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout preview only.",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
     ),
 ) -> None:
     """Compare requested vs actual usage by workload.
@@ -106,7 +112,7 @@ def workload_command(
         )
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 
@@ -116,7 +122,10 @@ def rancher_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout preview only.",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
     ),
 ) -> None:
     """Analyze namespace -> Rancher project mapping."""
@@ -124,7 +133,7 @@ def rancher_command(
         run = execute_rancher_project_overview(reports_root=report)
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 
@@ -140,7 +149,10 @@ def rancher_users_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout preview only.",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
     ),
     cache_dir: str = typer.Option(
         "cache/rancher_users",
@@ -167,7 +179,7 @@ def rancher_users_command(
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
             console.print(f"[green]Manifest:[/green] {run.manifest_path}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 
@@ -177,7 +189,10 @@ def rbac_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout preview only.",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
     ),
 ) -> None:
     """Analyze RBAC bindings and project-like namespace grouping."""
@@ -185,7 +200,7 @@ def rbac_command(
         run = execute_rbac_audit(reports_root=report)
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 
@@ -195,7 +210,9 @@ def dashboard_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout only.",
+        help=(
+            "Persist report files under this directory. If omitted, prints stdout only."
+        ),
     ),
 ) -> None:
     """Print current-state summary from historical audit files."""
@@ -203,7 +220,7 @@ def dashboard_command(
         run = execute_dashboard_summary(reports_root=report)
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 
@@ -213,7 +230,9 @@ def pods_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout only.",
+        help=(
+            "Persist report files under this directory. If omitted, prints stdout only."
+        ),
     ),
 ) -> None:
     """Print per-node pod density summary."""
@@ -221,7 +240,7 @@ def pods_command(
         run = execute_pod_density_summary(reports_root=report)
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 
@@ -231,7 +250,10 @@ def real_usage_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout preview only.",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
     ),
 ) -> None:
     """Compare real pod usage vs requests/limits."""
@@ -239,7 +261,7 @@ def real_usage_command(
         run = execute_usage_efficiency_audit(reports_root=report)
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 
@@ -255,7 +277,10 @@ def investigate_command(
         None,
         "--report",
         "-r",
-        help="Persist report files under this directory. If omitted, prints stdout preview only.",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
     ),
     skip_rancher: bool = typer.Option(
         False,
@@ -276,7 +301,7 @@ def investigate_command(
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
             console.print(f"[green]Manifest:[/green] {run.manifest_path}")
-    except Exception as exc:  # pragma: no cover
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
 

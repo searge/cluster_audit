@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -366,6 +367,7 @@ def investigate_rancher_cluster_members(
 # Report generation
 # ---------------------------------------------------------------------------
 def print_section(title: str) -> None:
+    """Print a top-level section separator to stdout."""
     width = 72
     print()
     print("=" * width)
@@ -374,154 +376,179 @@ def print_section(title: str) -> None:
 
 
 def print_subsection(title: str) -> None:
+    """Print a subsection title to stdout."""
     print(f"\n--- {title} ---")
 
 
-def generate_report(
-    namespaces: list[str],
+def _report_namespace_details(
+    ns: str,
+    *,
     client: RancherClient | None,
+    out: Callable[[str], None],
+) -> None:
+    """Emit investigation details for one namespace."""
+    out("")
+    out("=" * 72)
+    out(f"  NAMESPACE: {ns}")
+    out("=" * 72)
+
+    meta = _report_namespace_metadata(ns, out=out)
+    if meta is None:
+        out(f"  WARNING: Namespace '{ns}' not found!")
+        return
+
+    _report_current_pods(ns, out=out)
+    _report_deployments(ns, out=out)
+    _report_recent_replicasets(ns, out=out)
+    _report_deletion_events(ns, out=out)
+
+    project_id = meta.get("project_id", "")
+    if client and project_id:
+        _report_rancher_project_access(client, project_id=project_id, out=out)
+
+
+def _report_namespace_metadata(
+    ns: str,
+    *,
+    out: Callable[[str], None],
+) -> dict[str, Any] | None:
+    """Print namespace metadata and return collected metadata map."""
+    out("\n--- Namespace metadata ---")
+    meta = investigate_namespace_meta(ns)
+    if not meta:
+        return None
+    out(f"  Created:        {meta.get('created', 'N/A')}")
+    out(f"  UID:            {meta.get('uid', 'N/A')}")
+    out(f"  Project ID:     {meta.get('project_id', 'N/A')}")
+    out(f"  Project Name:   {meta.get('project_name', 'N/A')}")
+    out(f"  Resource Ver:   {meta.get('resource_version', 'N/A')}")
+    if meta.get("labels"):
+        out(f"  Rancher labels: {meta['labels']}")
+    return meta
+
+
+def _report_current_pods(ns: str, *, out: Callable[[str], None]) -> None:
+    """Print currently running pods in a namespace."""
+    out("\n--- Current pods ---")
+    pods = investigate_pods_age(ns)
+    if not pods:
+        out("  No pods running.")
+        return
+    out(f"  {'POD':<55} {'PHASE':<12} {'RESTARTS':>8}  CREATED")
+    for pod in pods:
+        out(
+            f"  {pod['name']:<55} {pod['phase']:<12} "
+            f"{pod['restarts']:>8}  {pod['created']}"
+        )
+
+
+def _report_deployments(ns: str, *, out: Callable[[str], None]) -> None:
+    """Print deployments and their replica status."""
+    out("\n--- Deployments ---")
+    deployments = investigate_deployments(ns)
+    if not deployments:
+        out("  No deployments.")
+        return
+    out(
+        f"  {'DEPLOYMENT':<45} {'DESIRED':>7} {'READY':>7} "
+        f"{'AVAIL':>7}  LAST TRANSITION"
+    )
+    for dep in deployments:
+        out(
+            f"  {dep['name']:<45} "
+            f"{dep['replicas_desired']:>7} "
+            f"{dep['replicas_ready']:>7} "
+            f"{dep['replicas_available']:>7}  "
+            f"{dep['last_transition']}"
+        )
+
+
+def _report_recent_replicasets(ns: str, *, out: Callable[[str], None]) -> None:
+    """Print recent replicasets for the namespace."""
+    out("\n--- Recent ReplicaSets (last 10) ---")
+    replicasets = investigate_replicasets(ns)
+    if not replicasets:
+        return
+    out(f"  {'REPLICASET':<55} {'SPEC':>5} {'READY':>5}  CREATED")
+    for rs in replicasets:
+        out(
+            f"  {rs['name']:<55} {rs['replicas_spec']:>5} "
+            f"{rs['replicas_ready']:>5}  {rs['created']}"
+        )
+
+
+def _report_deletion_events(ns: str, *, out: Callable[[str], None]) -> None:
+    """Print namespace events related to deletion and scaling."""
+    out("\n--- K8s events (deletion/kill/scale related) ---")
+    events = investigate_k8s_events(ns)
+    if not events:
+        out("  No deletion-related events found (events expire in ~1h).")
+        return
+    for event in events:
+        out(
+            f"  [{event['timestamp']}] {event['reason']:<22} "
+            f"{event['kind']:<15} {event['name']:<40}"
+        )
+        out(f"    {event['message']}")
+
+
+def _report_rancher_project_access(
+    client: RancherClient,
+    *,
+    project_id: str,
+    out: Callable[[str], None],
+) -> None:
+    """Print Rancher project role bindings for a namespace project."""
+    out(f"\n--- Rancher project access ({project_id}) ---")
+    access = investigate_rancher_project_access(client, project_id)
+    if not access:
+        out("  No project bindings found.")
+        return
+    out(f"  {'USER/GROUP':<40} {'ROLE':<25} CREATED")
+    for item in access:
+        who = item["user_name"] or item["group"] or "(unknown)"
+        out(f"  {who:<40} {item['role']:<25} {item['created']}")
+
+
+def _report_cluster_wide_activity(
+    *,
+    client: RancherClient,
     cluster_id: str,
-    output_dir: Path,
-) -> Path:
-    """Run full investigation and produce a report."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = output_dir / f"deletion_investigation_{timestamp}.txt"
-    output_dir.mkdir(exist_ok=True)
+    out: Callable[[str], None],
+) -> None:
+    """Emit cluster-wide Rancher token and member activity sections."""
+    out("")
+    out("=" * 72)
+    out("  CLUSTER-WIDE: Recent token activity")
+    out("=" * 72)
 
-    # Capture all output to both stdout and file
-    lines: list[str] = []
-
-    def out(text: str = "") -> None:
-        print(text)
-        lines.append(text)
-
-    out(f"DELETION INVESTIGATION REPORT — {datetime.now().isoformat()}")
-    out(f"Namespaces: {', '.join(namespaces)}")
-
-    # ---- Per-namespace investigation ----
-    for ns in namespaces:
-        out("")
-        out("=" * 72)
-        out(f"  NAMESPACE: {ns}")
-        out("=" * 72)
-
-        # 1. Namespace metadata
-        out("\n--- Namespace metadata ---")
-        meta = investigate_namespace_meta(ns)
-        if meta:
-            out(f"  Created:        {meta.get('created', 'N/A')}")
-            out(f"  UID:            {meta.get('uid', 'N/A')}")
-            out(f"  Project ID:     {meta.get('project_id', 'N/A')}")
-            out(f"  Project Name:   {meta.get('project_name', 'N/A')}")
-            out(f"  Resource Ver:   {meta.get('resource_version', 'N/A')}")
-            if meta.get("labels"):
-                out(f"  Rancher labels: {meta['labels']}")
-        else:
-            out(f"  WARNING: Namespace '{ns}' not found!")
-            continue
-
-        # 2. Current pods
-        out("\n--- Current pods ---")
-        pods = investigate_pods_age(ns)
-        if pods:
-            out(f"  {'POD':<55} {'PHASE':<12} {'RESTARTS':>8}  CREATED")
-            for p in pods:
-                out(
-                    f"  {p['name']:<55} {p['phase']:<12} "
-                    f"{p['restarts']:>8}  {p['created']}"
-                )
-        else:
-            out("  No pods running.")
-
-        # 3. Deployments
-        out("\n--- Deployments ---")
-        deps = investigate_deployments(ns)
-        if deps:
+    tokens = investigate_rancher_tokens(client)
+    if tokens:
+        out(f"\n  {'USER':<30} {'TOKEN':<20} {'LAST USED':<25} PROVIDER")
+        for token in tokens[:30]:
+            user = token["user_name"] or token["user_id"]
             out(
-                f"  {'DEPLOYMENT':<45} {'DESIRED':>7} {'READY':>7} "
-                f"{'AVAIL':>7}  LAST TRANSITION"
+                f"  {user:<30} {token['name']:<20} "
+                f"{token['last_used']:<25} {token['auth_provider']}"
             )
-            for d in deps:
-                out(
-                    f"  {d['name']:<45} "
-                    f"{d['replicas_desired']:>7} "
-                    f"{d['replicas_ready']:>7} "
-                    f"{d['replicas_available']:>7}  "
-                    f"{d['last_transition']}"
-                )
-        else:
-            out("  No deployments.")
+    else:
+        out("  Could not fetch token info.")
 
-        # 4. Recent ReplicaSets
-        out("\n--- Recent ReplicaSets (last 10) ---")
-        rs = investigate_replicasets(ns)
-        if rs:
-            out(f"  {'REPLICASET':<55} {'SPEC':>5} {'READY':>5}  CREATED")
-            for r in rs:
-                out(
-                    f"  {r['name']:<55} {r['replicas_spec']:>5} "
-                    f"{r['replicas_ready']:>5}  {r['created']}"
-                )
+    out("")
+    out("=" * 72)
+    out(f"  CLUSTER MEMBERS ({cluster_id})")
+    out("=" * 72)
 
-        # 5. K8s events (deletion-related)
-        out("\n--- K8s events (deletion/kill/scale related) ---")
-        events = investigate_k8s_events(ns)
-        if events:
-            for e in events:
-                out(
-                    f"  [{e['timestamp']}] {e['reason']:<22} "
-                    f"{e['kind']:<15} {e['name']:<40}"
-                )
-                out(f"    {e['message']}")
-        else:
-            out("  No deletion-related events found (events expire in ~1h).")
+    members = investigate_rancher_cluster_members(client, cluster_id)
+    if members:
+        out(f"\n  {'USER/GROUP':<40} {'ROLE':<25} CREATED")
+        for member in members:
+            who = member["user_name"] or member["group"] or "(unknown)"
+            out(f"  {who:<40} {member['role']:<25} {member['created']}")
 
-        # 6. Rancher project access
-        project_id = meta.get("project_id", "")
-        if client and project_id:
-            out(f"\n--- Rancher project access ({project_id}) ---")
-            access = investigate_rancher_project_access(client, project_id)
-            if access:
-                out(f"  {'USER/GROUP':<40} {'ROLE':<25} CREATED")
-                for a in access:
-                    who = a["user_name"] or a["group"] or "(unknown)"
-                    out(f"  {who:<40} {a['role']:<25} {a['created']}")
-            else:
-                out("  No project bindings found.")
 
-    # ---- Cluster-wide investigation ----
-    if client:
-        out("")
-        out("=" * 72)
-        out("  CLUSTER-WIDE: Recent token activity")
-        out("=" * 72)
-
-        tokens = investigate_rancher_tokens(client)
-        if tokens:
-            # Show tokens used in the last 48 hours
-            out(f"\n  {'USER':<30} {'TOKEN':<20} {'LAST USED':<25} PROVIDER")
-            for t in tokens[:30]:
-                user = t["user_name"] or t["user_id"]
-                out(
-                    f"  {user:<30} {t['name']:<20} "
-                    f"{t['last_used']:<25} {t['auth_provider']}"
-                )
-        else:
-            out("  Could not fetch token info.")
-
-        out("")
-        out("=" * 72)
-        out(f"  CLUSTER MEMBERS ({cluster_id})")
-        out("=" * 72)
-
-        members = investigate_rancher_cluster_members(client, cluster_id)
-        if members:
-            out(f"\n  {'USER/GROUP':<40} {'ROLE':<25} CREATED")
-            for m in members:
-                who = m["user_name"] or m["group"] or "(unknown)"
-                out(f"  {who:<40} {m['role']:<25} {m['created']}")
-
-    # ---- Summary / hints ----
+def _report_investigation_hints(out: Callable[[str], None]) -> None:
+    """Emit static investigation hints section."""
     out("")
     out("=" * 72)
     out("  INVESTIGATION HINTS")
@@ -548,6 +575,46 @@ def generate_report(
      ALL resources. If ns was recreated (age ~28h), everything in it is gone.
      Check Rancher project assignment to see if ns was re-attached.
 """)
+
+
+def _report_namespaces(
+    namespaces: list[str],
+    *,
+    client: RancherClient | None,
+    out: Callable[[str], None],
+) -> None:
+    """Emit per-namespace investigation sections."""
+    for namespace in namespaces:
+        _report_namespace_details(namespace, client=client, out=out)
+
+
+def generate_report(
+    namespaces: list[str],
+    client: RancherClient | None,
+    cluster_id: str,
+    output_dir: Path,
+) -> Path:
+    """Run full investigation and produce a report."""
+    report_path = output_dir / (
+        f"deletion_investigation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    )
+    output_dir.mkdir(exist_ok=True)
+
+    # Capture all output to both stdout and file
+    lines: list[str] = []
+
+    def out(text: str = "") -> None:
+        print(text)
+        lines.append(text)
+
+    out(f"DELETION INVESTIGATION REPORT — {datetime.now().isoformat()}")
+    out(f"Namespaces: {', '.join(namespaces)}")
+
+    _report_namespaces(namespaces, client=client, out=out)
+
+    if client:
+        _report_cluster_wide_activity(client=client, cluster_id=cluster_id, out=out)
+    _report_investigation_hints(out)
 
     # Save report
     report_path.write_text("\n".join(lines), encoding="utf-8")

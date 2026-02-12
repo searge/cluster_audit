@@ -2,18 +2,22 @@
 """Rancher Project Users Resolver."""
 
 import asyncio
-import json
+import importlib
 import os
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from diskcache import Cache  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 
-from mks.infrastructure.rancher_client import RancherApiError, RancherClient
+from mks.domain.rancher_namespace import extract_rancher_namespace_project
+from mks.infrastructure.kubectl_client import kubectl_json
+from mks.infrastructure.rancher_client import (
+    RancherApiError,
+    RancherAuth,
+    RancherClient,
+)
 
 
 @dataclass
@@ -32,16 +36,9 @@ def load_env_file(path: Path) -> None:
     load_dotenv(path, override=False)
 
 
-def run_kubectl_json(command: str) -> dict[str, Any]:
-    """Run kubectl and return JSON output."""
-    cmd = f"kubectl {command} -o json"
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
-    return cast(dict[str, Any], json.loads(result.stdout))
-
-
 def get_namespaces_info(target_namespaces: set[str]) -> list[NamespaceInfo]:
     """Fetch namespace -> project mapping from annotations/labels."""
-    data = run_kubectl_json("get namespaces")
+    data = kubectl_json("get namespaces")
     infos: list[NamespaceInfo] = []
 
     for ns in data.get("items", []):
@@ -49,26 +46,15 @@ def get_namespaces_info(target_namespaces: set[str]) -> list[NamespaceInfo]:
         if name not in target_namespaces:
             continue
 
-        annotations = ns["metadata"].get("annotations", {})
-        labels = ns["metadata"].get("labels", {})
-
-        project_id = (
-            annotations.get("field.cattle.io/projectId")
-            or labels.get("field.cattle.io/projectId")
-            or ""
-        )
-
-        project_name = annotations.get("field.cattle.io/projectName", "")
-        display_name = annotations.get("field.cattle.io/displayName", name)
-        description = annotations.get("field.cattle.io/description", "")
+        project_meta = extract_rancher_namespace_project(ns)
 
         infos.append(
             NamespaceInfo(
                 name=name,
-                project_id=project_id,
-                project_name=project_name or project_id,
-                display_name=display_name,
-                description=description,
+                project_id=project_meta.project_id,
+                project_name=project_meta.project_name,
+                display_name=project_meta.display_name,
+                description=project_meta.description,
             )
         )
 
@@ -121,10 +107,7 @@ def parse_namespaces(raw: str) -> set[str]:
 
 def fetch_ns_infos(namespaces: set[str]) -> list[NamespaceInfo]:
     """Load namespace info, failing fast on kubectl errors."""
-    try:
-        ns_infos = get_namespaces_info(namespaces)
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"kubectl failed: {exc}") from exc
+    ns_infos = get_namespaces_info(namespaces)
     if not ns_infos:
         raise ValueError("None of the requested namespaces were found")
     return ns_infos
@@ -204,7 +187,7 @@ async def fetch_project_bindings(
 async def normalize_project_names(
     client: RancherClient,
     projects: dict[str, dict[str, Any]],
-    cache: Cache,
+    cache: Any,
     cache_ttl_seconds: int,
 ) -> None:
     """Fill missing project names using cache then API for misses only.
@@ -250,7 +233,7 @@ async def normalize_project_names(
 async def fetch_user_map(
     client: RancherClient,
     projects: dict[str, dict[str, Any]],
-    cache: Cache,
+    cache: Any,
     cache_ttl_seconds: int,
 ) -> dict[str, dict[str, Any]]:
     """Build user details map from cache + async API misses.
@@ -389,6 +372,26 @@ def write_csv(rows: list[dict[str, Any]], data_dir: Path) -> Path:
     return out_file
 
 
+async def _collect_projects_and_users(
+    projects: dict[str, dict[str, Any]],
+    *,
+    rancher_cfg: tuple[str, str | None, str | None, str | None],
+    cache_dir: str,
+    cache_ttl_seconds: int,
+) -> dict[str, dict[str, Any]]:
+    """Enrich project mapping with bindings and return user details map."""
+    rancher_url, rancher_token, rancher_ak, rancher_sk = rancher_cfg
+    async with RancherClient(
+        rancher_url,
+        RancherAuth(token=rancher_token, ak=rancher_ak, sk=rancher_sk),
+    ) as client:
+        cache_cls = importlib.import_module("diskcache").Cache
+        with cache_cls(cache_dir) as cache:
+            await fetch_project_bindings(client, projects)
+            await normalize_project_names(client, projects, cache, cache_ttl_seconds)
+            return await fetch_user_map(client, projects, cache, cache_ttl_seconds)
+
+
 async def execute_rancher_users_export_async(
     namespaces_raw: str,
     data_dir: str = "reports",
@@ -421,16 +424,12 @@ async def execute_rancher_users_export_async(
     warn_missing_namespaces(namespaces, ns_infos)
     projects = build_project_mapping(ns_infos)
 
-    async with RancherClient(
-        rancher_url,
-        rancher_token,
-        rancher_ak,
-        rancher_sk,
-    ) as client:
-        with Cache(cache_dir) as cache:
-            await fetch_project_bindings(client, projects)
-            await normalize_project_names(client, projects, cache, cache_ttl_seconds)
-            user_map = await fetch_user_map(client, projects, cache, cache_ttl_seconds)
+    user_map = await _collect_projects_and_users(
+        projects,
+        rancher_cfg=(rancher_url, rancher_token, rancher_ak, rancher_sk),
+        cache_dir=cache_dir,
+        cache_ttl_seconds=cache_ttl_seconds,
+    )
 
     rows = build_rows(projects, user_map)
     return write_csv(rows, Path(data_dir))

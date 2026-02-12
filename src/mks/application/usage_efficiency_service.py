@@ -12,10 +12,12 @@ from typing import Any
 import pandas as pd
 
 from mks.domain.quantity_parser import parse_cpu, parse_memory
-from mks.infrastructure.kubectl_client import KubectlError, kubectl_json
+from mks.infrastructure.kubectl_client import kubectl_json_or_empty
 
 
 class RealUsageAnalyzer:
+    """Analyze live pod usage versus requested resources and report waste."""
+
     def __init__(self, data_dir: str = "reports"):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(exist_ok=True)
@@ -23,11 +25,7 @@ class RealUsageAnalyzer:
 
     def run_kubectl(self, command: str) -> dict[str, Any]:
         """Execute kubectl command and return JSON output"""
-        try:
-            return kubectl_json(command)
-        except KubectlError as e:
-            print(f"❌ Error running kubectl: {e}")
-            return {}
+        return kubectl_json_or_empty(command)
 
     def parse_cpu(self, cpu_str: str) -> float:
         """Parse CPU string to millicores"""
@@ -36,6 +34,178 @@ class RealUsageAnalyzer:
     def parse_memory(self, memory_str: str) -> int:
         """Parse memory string to bytes"""
         return parse_memory(memory_str)
+
+    @staticmethod
+    def _calculate_pod_totals(spec: dict[str, Any]) -> tuple[float, float, int, int]:
+        """Return total requests and limits for a pod."""
+        total_cpu_request = sum(c["cpu_request"] for c in spec["containers"])
+        total_cpu_limit = sum(c["cpu_limit"] for c in spec["containers"])
+        total_memory_request = sum(c["memory_request"] for c in spec["containers"])
+        total_memory_limit = sum(c["memory_limit"] for c in spec["containers"])
+        return (
+            total_cpu_request,
+            total_cpu_limit,
+            total_memory_request,
+            total_memory_limit,
+        )
+
+    @staticmethod
+    def _categorize_cpu_efficiency(cpu_usage: float, cpu_efficiency: float) -> str:
+        """Map CPU efficiency values to a human-readable category."""
+        if cpu_usage == 0:
+            return "Idle"
+        if cpu_efficiency > 80:
+            return "Efficient"
+        if cpu_efficiency > 50:
+            return "Moderate"
+        if cpu_efficiency > 20:
+            return "Wasteful"
+        return "Very Wasteful"
+
+    @staticmethod
+    def _build_analysis_row(
+        pod_key: str,
+        spec: dict[str, Any],
+        usage: dict[str, float],
+        totals: tuple[float, float, int, int],
+        category: str,
+    ) -> dict[str, Any]:
+        """Build a normalized analysis row for a single pod."""
+        metrics = RealUsageAnalyzer._calculate_waste_and_efficiency(usage, totals)
+        (
+            total_cpu_request,
+            total_cpu_limit,
+            total_memory_request,
+            total_memory_limit,
+        ) = totals
+        return {
+            "pod_key": pod_key,
+            "namespace": spec["namespace"],
+            "node": spec["node"],
+            "container_count": len(spec["containers"]),
+            "cpu_usage_m": round(usage["cpu_usage"], 1),
+            "cpu_request_m": round(total_cpu_request, 1),
+            "cpu_limit_m": round(total_cpu_limit, 1),
+            "memory_usage_mb": round(usage["memory_usage"] / 1024 / 1024, 1),
+            "memory_request_mb": round(total_memory_request / 1024 / 1024, 1),
+            "memory_limit_mb": round(total_memory_limit / 1024 / 1024, 1),
+            "cpu_request_waste_m": round(metrics["cpu_request_waste"], 1),
+            "cpu_limit_waste_m": round(metrics["cpu_limit_waste"], 1),
+            "memory_request_waste_mb": round(
+                metrics["memory_request_waste"] / 1024 / 1024, 1
+            ),
+            "memory_limit_waste_mb": round(
+                metrics["memory_limit_waste"] / 1024 / 1024, 1
+            ),
+            "cpu_efficiency_pct": round(metrics["cpu_efficiency"], 1),
+            "memory_efficiency_pct": round(metrics["memory_efficiency"], 1),
+            "category": category,
+            "has_limits": total_cpu_limit > 0 and total_memory_limit > 0,
+            "overprovisioned": metrics["cpu_efficiency"] < 20
+            and total_cpu_request > 100,
+        }
+
+    @staticmethod
+    def _calculate_waste_and_efficiency(
+        usage: dict[str, float],
+        totals: tuple[float, float, int, int],
+    ) -> dict[str, float]:
+        """Return waste and efficiency values for CPU and memory dimensions."""
+        cpu_usage = usage["cpu_usage"]
+        memory_usage = usage["memory_usage"]
+        total_cpu_request, total_cpu_limit, total_memory_request, total_memory_limit = (
+            totals
+        )
+        cpu_request_waste = (
+            total_cpu_request - cpu_usage if total_cpu_request > 0 else 0
+        )
+        cpu_limit_waste = total_cpu_limit - cpu_usage if total_cpu_limit > 0 else 0
+        memory_request_waste = (
+            total_memory_request - memory_usage if total_memory_request > 0 else 0
+        )
+        memory_limit_waste = (
+            total_memory_limit - memory_usage if total_memory_limit > 0 else 0
+        )
+        cpu_efficiency = (
+            (cpu_usage / total_cpu_request * 100) if total_cpu_request > 0 else 0
+        )
+        memory_efficiency = (
+            (memory_usage / total_memory_request * 100)
+            if total_memory_request > 0
+            else 0
+        )
+        return {
+            "cpu_request_waste": cpu_request_waste,
+            "cpu_limit_waste": cpu_limit_waste,
+            "memory_request_waste": memory_request_waste,
+            "memory_limit_waste": memory_limit_waste,
+            "cpu_efficiency": cpu_efficiency,
+            "memory_efficiency": memory_efficiency,
+        }
+
+    @staticmethod
+    def _build_stats(df: pd.DataFrame) -> dict[str, float]:
+        """Compute aggregate cluster statistics from analysis dataframe."""
+        cpu_request_values = pd.to_numeric(df["cpu_request_m"]).to_numpy(dtype=float)
+        cpu_used_values = pd.to_numeric(df["cpu_usage_m"]).to_numpy(dtype=float)
+        memory_request_values = pd.to_numeric(df["memory_request_mb"]).to_numpy(
+            dtype=float
+        )
+        memory_used_values = pd.to_numeric(df["memory_usage_mb"]).to_numpy(dtype=float)
+        cpu_waste_values = pd.to_numeric(df["cpu_request_waste_m"]).to_numpy(
+            dtype=float
+        )
+        memory_waste_values = pd.to_numeric(df["memory_request_waste_mb"]).to_numpy(
+            dtype=float
+        )
+        cpu_efficiency_values = pd.to_numeric(
+            df.loc[df["cpu_request_m"] > 0, "cpu_efficiency_pct"]
+        ).to_numpy(dtype=float)
+        memory_efficiency_values = pd.to_numeric(
+            df.loc[df["memory_request_mb"] > 0, "memory_efficiency_pct"]
+        ).to_numpy(dtype=float)
+        return {
+            "total_pods": float(len(df)),
+            "total_cpu_requested": float(cpu_request_values.sum()),
+            "total_cpu_used": float(cpu_used_values.sum()),
+            "total_memory_requested": float(memory_request_values.sum()),
+            "total_memory_used": float(memory_used_values.sum()),
+            "cpu_waste_total": float(cpu_waste_values.sum()),
+            "memory_waste_total": float(memory_waste_values.sum()),
+            "avg_cpu_efficiency": (
+                float(cpu_efficiency_values.mean())
+                if cpu_efficiency_values.size > 0
+                else 0.0
+            ),
+            "avg_memory_efficiency": (
+                float(memory_efficiency_values.mean())
+                if memory_efficiency_values.size > 0
+                else 0.0
+            ),
+        }
+
+    @staticmethod
+    def _recommended_defaults(df: pd.DataFrame) -> dict[str, str]:
+        """Suggest default requests/limits based on active workload percentiles."""
+        active_pods = df[df["cpu_usage_m"] > 0]
+        if active_pods.empty:
+            return {
+                "cpu_request": "50m",
+                "cpu_limit": "100m",
+                "memory_request": "64Mi",
+                "memory_limit": "128Mi",
+            }
+
+        cpu_p75 = active_pods["cpu_usage_m"].quantile(0.75)
+        cpu_p90 = active_pods["cpu_usage_m"].quantile(0.9)
+        memory_p75 = active_pods["memory_usage_mb"].quantile(0.75)
+        memory_p90 = active_pods["memory_usage_mb"].quantile(0.9)
+        return {
+            "cpu_request": f"{max(50, int(cpu_p75))}m",
+            "cpu_limit": f"{max(100, int(cpu_p90 * 2))}m",
+            "memory_request": f"{max(64, int(memory_p75))}Mi",
+            "memory_limit": f"{max(128, int(memory_p90 * 1.5))}Mi",
+        }
 
     def get_pod_specs(self) -> dict[str, dict[str, Any]]:
         """Get resource specs for all running pods"""
@@ -126,77 +296,30 @@ class RealUsageAnalyzer:
 
         for pod_key, spec in pod_specs.items():
             usage = real_usage.get(pod_key, {"cpu_usage": 0, "memory_usage": 0})
-
-            # Calculate totals for the pod
-            total_cpu_request = sum(c["cpu_request"] for c in spec["containers"])
-            total_cpu_limit = sum(c["cpu_limit"] for c in spec["containers"])
-            total_memory_request = sum(c["memory_request"] for c in spec["containers"])
-            total_memory_limit = sum(c["memory_limit"] for c in spec["containers"])
-
             cpu_usage = usage["cpu_usage"]
-            memory_usage = usage["memory_usage"]
-
-            # Calculate waste and efficiency
-            cpu_request_waste = (
-                total_cpu_request - cpu_usage if total_cpu_request > 0 else 0
-            )
-            cpu_limit_waste = total_cpu_limit - cpu_usage if total_cpu_limit > 0 else 0
-            memory_request_waste = (
-                total_memory_request - memory_usage if total_memory_request > 0 else 0
-            )
-            memory_limit_waste = (
-                total_memory_limit - memory_usage if total_memory_limit > 0 else 0
-            )
-
-            # Efficiency percentages
+            (
+                total_cpu_request,
+                total_cpu_limit,
+                total_memory_request,
+                total_memory_limit,
+            ) = self._calculate_pod_totals(spec)
             cpu_efficiency = (
                 (cpu_usage / total_cpu_request * 100) if total_cpu_request > 0 else 0
             )
-            memory_efficiency = (
-                (memory_usage / total_memory_request * 100)
-                if total_memory_request > 0
-                else 0
-            )
-
-            # Determine categories
-            category = "Unknown"
-            if cpu_usage == 0:
-                category = "Idle"
-            elif cpu_efficiency > 80:
-                category = "Efficient"
-            elif cpu_efficiency > 50:
-                category = "Moderate"
-            elif cpu_efficiency > 20:
-                category = "Wasteful"
-            else:
-                category = "Very Wasteful"
-
+            category = self._categorize_cpu_efficiency(cpu_usage, cpu_efficiency)
             analysis_data.append(
-                {
-                    "pod_key": pod_key,
-                    "namespace": spec["namespace"],
-                    "node": spec["node"],
-                    "container_count": len(spec["containers"]),
-                    "cpu_usage_m": round(cpu_usage, 1),
-                    "cpu_request_m": round(total_cpu_request, 1),
-                    "cpu_limit_m": round(total_cpu_limit, 1),
-                    "memory_usage_mb": round(memory_usage / 1024 / 1024, 1),
-                    "memory_request_mb": round(total_memory_request / 1024 / 1024, 1),
-                    "memory_limit_mb": round(total_memory_limit / 1024 / 1024, 1),
-                    "cpu_request_waste_m": round(cpu_request_waste, 1),
-                    "cpu_limit_waste_m": round(cpu_limit_waste, 1),
-                    "memory_request_waste_mb": round(
-                        memory_request_waste / 1024 / 1024, 1
+                self._build_analysis_row(
+                    pod_key=pod_key,
+                    spec=spec,
+                    usage=usage,
+                    totals=(
+                        total_cpu_request,
+                        total_cpu_limit,
+                        total_memory_request,
+                        total_memory_limit,
                     ),
-                    "memory_limit_waste_mb": round(memory_limit_waste / 1024 / 1024, 1),
-                    "cpu_efficiency_pct": round(cpu_efficiency, 1),
-                    "memory_efficiency_pct": round(memory_efficiency, 1),
-                    "category": category,
-                    "has_limits": total_cpu_limit > 0 and total_memory_limit > 0,
-                    "overprovisioned": cpu_efficiency < 20
-                    and total_cpu_request
-                    > 100,  # Less than 20% efficient and requesting >100m
-                }
+                    category=category,
+                )
             )
 
         return analysis_data
@@ -212,22 +335,7 @@ class RealUsageAnalyzer:
         if df.empty:
             return {}
 
-        # Overall statistics
-        stats = {
-            "total_pods": len(df),
-            "total_cpu_requested": df["cpu_request_m"].sum(),
-            "total_cpu_used": df["cpu_usage_m"].sum(),
-            "total_memory_requested": df["memory_request_mb"].sum(),
-            "total_memory_used": df["memory_usage_mb"].sum(),
-            "cpu_waste_total": df["cpu_request_waste_m"].sum(),
-            "memory_waste_total": df["memory_request_waste_mb"].sum(),
-            "avg_cpu_efficiency": df[df["cpu_request_m"] > 0][
-                "cpu_efficiency_pct"
-            ].mean(),
-            "avg_memory_efficiency": df[df["memory_request_mb"] > 0][
-                "memory_efficiency_pct"
-            ].mean(),
-        }
+        stats = self._build_stats(df)
 
         # Category breakdown
         category_stats = df["category"].value_counts().to_dict()
@@ -248,31 +356,7 @@ class RealUsageAnalyzer:
             .round(1)
         )
 
-        # Find realistic defaults based on usage patterns
-        active_pods = df[df["cpu_usage_m"] > 0]
-        if not active_pods.empty:
-            # Calculate percentiles of actual usage
-            active_pods["cpu_usage_m"].quantile(0.5)
-            cpu_p75 = active_pods["cpu_usage_m"].quantile(0.75)
-            cpu_p90 = active_pods["cpu_usage_m"].quantile(0.9)
-
-            active_pods["memory_usage_mb"].quantile(0.5)
-            memory_p75 = active_pods["memory_usage_mb"].quantile(0.75)
-            memory_p90 = active_pods["memory_usage_mb"].quantile(0.9)
-
-            recommended_defaults = {
-                "cpu_request": f"{max(50, int(cpu_p75))}m",  # P75 but minimum 50m
-                "cpu_limit": f"{max(100, int(cpu_p90 * 2))}m",  # P90 * 2 for bursts
-                "memory_request": f"{max(64, int(memory_p75))}Mi",
-                "memory_limit": f"{max(128, int(memory_p90 * 1.5))}Mi",
-            }
-        else:
-            recommended_defaults = {
-                "cpu_request": "50m",
-                "cpu_limit": "100m",
-                "memory_request": "64Mi",
-                "memory_limit": "128Mi",
-            }
+        recommended_defaults = self._recommended_defaults(df)
 
         return {
             "stats": stats,
@@ -309,7 +393,7 @@ class RealUsageAnalyzer:
         # Save recommendations
         rec_file = self.data_dir / f"usage_recommendations_{timestamp_str}.md"
 
-        with open(rec_file, "w") as f:
+        with open(rec_file, "w", encoding="utf-8") as f:
             f.write("# Real Resource Usage Analysis\n")
             f.write(
                 f"**Generated**: {self.timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
@@ -317,6 +401,16 @@ class RealUsageAnalyzer:
 
             # Overall stats
             stats = recommendations.get("stats", {})
+            cpu_waste_pct = (
+                stats.get("cpu_waste_total", 0)
+                / max(stats.get("total_cpu_requested", 1), 1)
+                * 100
+            )
+            memory_waste_pct = (
+                stats.get("memory_waste_total", 0)
+                / max(stats.get("total_memory_requested", 1), 1)
+                * 100
+            )
             f.write("## 📊 Cluster Resource Efficiency\n\n")
             f.write("| Metric | Value |\n")
             f.write("|--------|-------|\n")
@@ -328,22 +422,28 @@ class RealUsageAnalyzer:
                 f"| **CPU Actually Used** | {stats.get('total_cpu_used', 0):.1f}m |\n"
             )
             f.write(
-                f"| **CPU Waste** | {stats.get('cpu_waste_total', 0):.1f}m ({(stats.get('cpu_waste_total', 0) / max(stats.get('total_cpu_requested', 1), 1) * 100):.1f}%) |\n"
+                f"| **CPU Waste** | {stats.get('cpu_waste_total', 0):.1f}m "
+                f"({cpu_waste_pct:.1f}%) |\n"
             )
             f.write(
-                f"| **Avg CPU Efficiency** | {stats.get('avg_cpu_efficiency', 0):.1f}% |\n"
+                f"| **Avg CPU Efficiency** | "
+                f"{stats.get('avg_cpu_efficiency', 0):.1f}% |\n"
             )
             f.write(
-                f"| **Memory Requested** | {stats.get('total_memory_requested', 0):.1f}MB |\n"
+                f"| **Memory Requested** | "
+                f"{stats.get('total_memory_requested', 0):.1f}MB |\n"
             )
             f.write(
-                f"| **Memory Actually Used** | {stats.get('total_memory_used', 0):.1f}MB |\n"
+                f"| **Memory Actually Used** | "
+                f"{stats.get('total_memory_used', 0):.1f}MB |\n"
             )
             f.write(
-                f"| **Memory Waste** | {stats.get('memory_waste_total', 0):.1f}MB ({(stats.get('memory_waste_total', 0) / max(stats.get('total_memory_requested', 1), 1) * 100):.1f}%) |\n"
+                f"| **Memory Waste** | {stats.get('memory_waste_total', 0):.1f}MB "
+                f"({memory_waste_pct:.1f}%) |\n"
             )
             f.write(
-                f"| **Avg Memory Efficiency** | {stats.get('avg_memory_efficiency', 0):.1f}% |\n\n"
+                f"| **Avg Memory Efficiency** | "
+                f"{stats.get('avg_memory_efficiency', 0):.1f}% |\n\n"
             )
 
             # Category breakdown
@@ -380,14 +480,19 @@ class RealUsageAnalyzer:
                     waster["cpu_request_waste_m"] / max(waster["cpu_request_m"], 1)
                 ) * 100
                 f.write(
-                    f"- **{waster['pod_key']}**: Using {waster['cpu_usage_m']}m, requesting {waster['cpu_request_m']}m (wasting {waste_pct:.0f}%)\n"
+                    f"- **{waster['pod_key']}**: Using {waster['cpu_usage_m']}m, "
+                    f"requesting {waster['cpu_request_m']}m "
+                    f"(wasting {waste_pct:.0f}%)\n"
                 )
             f.write("\n")
 
             # Most efficient
             f.write("## ✅ Most Efficient Pods\n\n")
             f.writelines(
-                f"- **{efficient['pod_key']}**: {efficient['cpu_efficiency_pct']:.1f}% efficiency ({efficient['cpu_usage_m']}m used of {efficient['cpu_request_m']}m requested)\n"
+                f"- **{efficient['pod_key']}**: "
+                f"{efficient['cpu_efficiency_pct']:.1f}% efficiency "
+                f"({efficient['cpu_usage_m']}m used of "
+                f"{efficient['cpu_request_m']}m requested)\n"
                 for efficient in recommendations.get("most_efficient", [])[:5]
             )
 
@@ -402,12 +507,18 @@ class RealUsageAnalyzer:
         print("=" * 60)
 
         stats = recommendations.get("stats", {})
+        cpu_waste_pct = (
+            stats.get("cpu_waste_total", 0)
+            / max(stats.get("total_cpu_requested", 1), 1)
+            * 100
+        )
 
         print("\n🎯 Cluster Efficiency:")
         print(f"  • CPU: {stats.get('avg_cpu_efficiency', 0):.1f}% efficient")
         print(f"  • Memory: {stats.get('avg_memory_efficiency', 0):.1f}% efficient")
         print(
-            f"  • CPU waste: {stats.get('cpu_waste_total', 0):.1f}m ({(stats.get('cpu_waste_total', 0) / max(stats.get('total_cpu_requested', 1), 1) * 100):.1f}%)"
+            f"  • CPU waste: {stats.get('cpu_waste_total', 0):.1f}m "
+            f"({cpu_waste_pct:.1f}%)"
         )
 
         print("\n💡 Recommended Defaults (based on real usage):")

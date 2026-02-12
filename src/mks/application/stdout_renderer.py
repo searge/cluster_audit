@@ -89,6 +89,13 @@ def _profile_for_file(file_name: str) -> tuple[str, ...] | None:
     return None
 
 
+def _columns_from_rows(headers: list[str], rows: list[list[str]]) -> list[list[str]]:
+    columns: list[list[str]] = []
+    for col_idx in range(len(headers)):
+        columns.append([row[col_idx] if col_idx < len(row) else "" for row in rows])
+    return columns
+
+
 def _drop_redundant_columns(
     headers: list[str],
     columns: list[list[str]],
@@ -114,6 +121,38 @@ def _drop_redundant_columns(
     return kept_headers, kept_columns, dropped
 
 
+def _profile_selected_indices(
+    file_name: str,
+    headers: list[str],
+    console_width: int,
+) -> list[int]:
+    profile = _profile_for_file(file_name)
+    if not profile:
+        return []
+    by_name = {header: idx for idx, header in enumerate(headers)}
+    max_cols = max(4, console_width // _TARGET_COLUMN_WIDTH)
+    return [by_name[h] for h in profile if h in by_name][:max_cols]
+
+
+def _ranked_indices_for_columns(
+    headers: list[str],
+    columns: list[list[str]],
+    rows_count: int,
+    max_cols: int,
+) -> list[int]:
+    scores: dict[int, float] = defaultdict(float)
+    for idx, header in enumerate(headers):
+        lowered = header.lower()
+        non_empty = _non_empty_count(columns[idx])
+        unique_count = len({_normalize(v) for v in columns[idx] if _normalize(v)})
+        scores[idx] += non_empty + (unique_count * 0.5)
+        if any(keyword in lowered for keyword in _PRIORITY_KEYWORDS):
+            scores[idx] += rows_count * 0.75
+    ranked = sorted(scores, key=lambda idx: scores[idx], reverse=True)[:max_cols]
+    ranked.sort()
+    return ranked
+
+
 def _select_columns(
     *,
     file_name: str,
@@ -124,47 +163,46 @@ def _select_columns(
     if not headers:
         return [], [], 0
 
-    columns: list[list[str]] = []
-    for col_idx in range(len(headers)):
-        columns.append([row[col_idx] if col_idx < len(row) else "" for row in rows])
-
+    columns = _columns_from_rows(headers, rows)
     headers, columns, dropped = _drop_redundant_columns(headers, columns)
     if not headers:
         return [], [], dropped
 
-    profile = _profile_for_file(file_name)
-    if profile:
-        by_name = {h: i for i, h in enumerate(headers)}
-        selected_indices = [by_name[h] for h in profile if h in by_name]
-        if selected_indices:
-            max_cols = max(4, console_width // _TARGET_COLUMN_WIDTH)
-            selected_indices = selected_indices[:max_cols]
-            selected_headers = [headers[i] for i in selected_indices]
-            selected_columns = [columns[i] for i in selected_indices]
-            hidden = len(headers) - len(selected_headers) + dropped
-            return selected_headers, selected_columns, hidden
+    profile_indices = _profile_selected_indices(file_name, headers, console_width)
+    if profile_indices:
+        selected_headers = [headers[i] for i in profile_indices]
+        selected_columns = [columns[i] for i in profile_indices]
+        hidden = len(headers) - len(selected_headers) + dropped
+        return selected_headers, selected_columns, hidden
 
     max_cols = max(4, console_width // _TARGET_COLUMN_WIDTH)
     if len(headers) <= max_cols:
         return headers, columns, dropped
 
-    scores: dict[int, float] = defaultdict(float)
-    for idx, header in enumerate(headers):
-        h = header.lower()
-        non_empty = _non_empty_count(columns[idx])
-        unique_count = len({_normalize(v) for v in columns[idx] if _normalize(v)})
-        scores[idx] += non_empty * 1.0
-        scores[idx] += unique_count * 0.5
-        if any(keyword in h for keyword in _PRIORITY_KEYWORDS):
-            scores[idx] += len(rows) * 0.75
-
-    ranked = sorted(scores, key=lambda i: scores[i], reverse=True)[:max_cols]
-    ranked.sort()
-
+    ranked = _ranked_indices_for_columns(headers, columns, len(rows), max_cols)
     selected_headers = [headers[i] for i in ranked]
     selected_columns = [columns[i] for i in ranked]
     hidden = len(headers) - len(selected_headers) + dropped
     return selected_headers, selected_columns, hidden
+
+
+def _build_table(
+    file_name: str,
+    selected_headers: list[str],
+    selected_columns: list[list[str]],
+) -> Table:
+    table = Table(
+        title=file_name,
+        show_lines=False,
+        expand=True,
+        box=box.SIMPLE_HEAVY,
+    )
+    for col_idx, header in enumerate(selected_headers):
+        if _is_numeric_column(selected_columns[col_idx]):
+            table.add_column(header, overflow="fold", no_wrap=False, justify="right")
+        else:
+            table.add_column(header, overflow="fold", no_wrap=False, justify="left")
+    return table
 
 
 def _render_csv(console: Console, file_path: Path) -> None:
@@ -189,22 +227,7 @@ def _render_csv(console: Console, file_path: Path) -> None:
         console.print(f"[yellow]{file_path.name} has no informative columns.[/yellow]")
         return
 
-    table = Table(
-        title=file_path.name,
-        show_lines=False,
-        expand=True,
-        box=box.SIMPLE_HEAVY,
-    )
-    for col_idx, header in enumerate(selected_headers):
-        table.add_column(
-            header,
-            overflow="fold",
-            no_wrap=False,
-            justify="right"
-            if _is_numeric_column(selected_columns[col_idx])
-            else "left",
-        )
-
+    table = _build_table(file_path.name, selected_headers, selected_columns)
     selected_index_map = {header: idx for idx, header in enumerate(headers)}
     visible_indices = [selected_index_map[header] for header in selected_headers]
 
