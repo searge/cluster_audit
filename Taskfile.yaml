@@ -3,7 +3,7 @@
 version: "3"
 
 vars:
-  UV_ENV: "env VIRTUAL_ENV={{.PWD}}/.venv UV_CACHE_DIR=.uv-cache"
+  UV_ENV: "env VIRTUAL_ENV={{.PWD}}/.venv UV_CACHE_DIR=.uv-cache MYPY_CACHE_DIR=.mypy_cache PYLINTHOME=.pylint_cache"
 
 tasks:
   default:
@@ -16,41 +16,10 @@ tasks:
     cmds:
       - "{{.UV_ENV}} uv sync"
 
-  audit:
-    desc: Run standard audit
+  mks:
+    desc: "Run mks CLI without activating venv (example: task mks -- resource-audit -h)"
     cmds:
-      - "{{.UV_ENV}} uv run python resource_audit.py --mode current"
-
-  audit-extended:
-    desc: Run extended operational audit
-    cmds:
-      - "{{.UV_ENV}} uv run python resource_audit.py --mode extended"
-
-  workload-efficiency:
-    desc: Generate workload resource efficiency CSV report
-    aliases: [we]
-    cmds:
-      - "{{.UV_ENV}} uv run python simple_resource_table.py"
-
-  rancher:
-    desc: Run Rancher project analysis
-    cmds:
-      - "{{.UV_ENV}} uv run python simple_rancher_analyzer.py"
-
-  rancher-users:
-    desc: Map namespaces to Rancher projects and list project users
-    cmds:
-      - "{{.UV_ENV}} uv run python rancher_project_users.py --namespaces \"{{.NAMESPACES | default .CLI_ARGS}}\""
-
-  rbac:
-    desc: Run RBAC analysis
-    cmds:
-      - "{{.UV_ENV}} uv run python k8s_rbac_analyzer.py"
-
-  dashboard:
-    desc: Generate audit dashboard
-    cmds:
-      - "{{.UV_ENV}} uv run python audit_dashboard.py"
+      - '{{.UV_ENV}} uv run mks {{.CLI_ARGS | default "--help"}}'
 
   lint:
     desc: Run code quality checks
@@ -58,7 +27,7 @@ tasks:
       - "{{.UV_ENV}} uv run ruff format {{.CLI_ARGS | default '.'}}"
       - "{{.UV_ENV}} uv run ruff check --fix {{.CLI_ARGS | default '.'}}"
       - "{{.UV_ENV}} uv run ty check {{.CLI_ARGS | default '.'}}"
-      - "{{.UV_ENV}} uv run pylint {{.CLI_ARGS | default '.'}} -j 0"
+      - "{{.UV_ENV}} uv run pylint {{.CLI_ARGS | default '.'}} -j 1"
 
   typecheck:
     desc: Run type checking
@@ -78,11 +47,3 @@ tasks:
       - find reports/ -name "*.csv" -type f -mtime +14 -delete
       - find reports/ -name "*.md" -type f -mtime +7 -delete
       - echo "🗑️ Cleanup completed"
-
-  all:
-    desc: Run complete analysis suite
-    cmds:
-      - task: audit
-      - task: rancher
-      - task: rbac
-      - task: dashboard

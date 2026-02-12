@@ -4,10 +4,7 @@ Kubernetes RBAC and Project Analyzer
 Analyzes users, service accounts, and access patterns in plain Kubernetes
 """
 
-import json
 import re
-import subprocess
-import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+from mks.domain.namespace_policy import is_system_namespace
+from mks.infrastructure.kubectl_client import KubectlError, kubectl_json
 
 
 @dataclass
@@ -51,29 +51,14 @@ class K8sRBACAnalyzer:
             "kube-public",
             "kube-node-lease",
             "default",
-            "gke-gmp-system",
-            "gke-managed-cim",
-            "gke-managed-filestorecsi",
-            "gke-managed-parallelstorecsi",
-            "gke-managed-system",
-            "gke-managed-volumepopulator",
-            "gmp-public",
         }
 
     def run_kubectl(self, command: str) -> dict[str, Any]:
         """Execute kubectl command and return JSON output"""
         try:
-            cmd = f"kubectl {command} -o json"
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, check=True
-            )
-            return json.loads(result.stdout)  # type: ignore[no-any-return]
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Error running kubectl: {e}")
-            sys.exit(1)
-        except json.JSONDecodeError as e:
-            print(f"❌ Error parsing JSON: {e}")
-            sys.exit(1)
+            return kubectl_json(command)
+        except KubectlError as e:
+            raise RuntimeError(f"Error running kubectl: {e}") from e
 
     def get_all_namespaces(self) -> dict[str, dict[str, Any]]:
         """Get all namespaces with metadata"""
@@ -88,8 +73,9 @@ class K8sRBACAnalyzer:
             name = ns["metadata"]["name"]
 
             # Skip system namespaces
-            if name in self.system_namespaces or name.startswith(
-                ("cattle-", "rancher-")
+            if is_system_namespace(
+                name,
+                extra_namespaces=frozenset(self.system_namespaces),
             ):
                 continue
 
@@ -541,10 +527,16 @@ class K8sRBACAnalyzer:
             traceback.print_exc()
 
 
-def main() -> None:
-    analyzer = K8sRBACAnalyzer()
+def execute_rbac_audit(data_dir: str = "reports") -> None:
+    """Execute RBAC audit use-case."""
+    analyzer = K8sRBACAnalyzer(data_dir=data_dir)
     analyzer.run_analysis()
 
 
+def execute() -> None:
+    """Backward-compatible alias for execute_rbac_audit."""
+    execute_rbac_audit()
+
+
 if __name__ == "__main__":
-    main()
+    execute_rbac_audit()

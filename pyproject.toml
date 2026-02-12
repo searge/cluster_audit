@@ -1,22 +1,33 @@
 [project]
-name = "k8s"
+name = "mks-audit"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "diskcache>=5.6.3",
+    "httpx>=0.28.1",
     "matplotlib>=3.10.5",
     "numpy>=2.3.2",
     "pandas>=2.3.1",
     "python-dotenv>=1.2.1",
     "requests>=2.32.4",
+    "rich>=14.3.2",
     "seaborn>=0.13.2",
+    "typer>=0.23.0",
 ]
+
+[project.scripts]
+mks = "mks.cli.main:main"
+
+[project.optional-dependencies]
+ovh = ["ovh>=1.2.0"]
 
 [dependency-groups]
 dev = [
     "mypy>=1.17.1",
     "pandas-stubs>=2.3.0.250703",
+    "pytest>=8.4.2",
     "pylance>=0.32.0",
     "pylint>=4.0.4",
     "ruff>=0.12.7",
@@ -64,3 +75,6 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+
+[tool.uv]
+package = true

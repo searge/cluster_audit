@@ -693,9 +693,9 @@ def generate_summary_report(config: AuditConfig) -> None:
     print_monitoring_summary(current_state, trends, config)
 
 
-def main() -> None:
-    """Main entry point"""
-    config = AuditConfig(data_dir=Path("reports"))
+def execute_dashboard_summary(data_dir: str = "reports") -> None:
+    """Execute dashboard summary use-case."""
+    config = AuditConfig(data_dir=Path(data_dir))
 
     # Generate summary
     generate_summary_report(config)
@@ -704,5 +704,10 @@ def main() -> None:
     cleanup_old_files(config)
 
 
+def execute() -> None:
+    """Backward-compatible alias for execute_dashboard_summary."""
+    execute_dashboard_summary()
+
+
 if __name__ == "__main__":
-    main()
+    execute_dashboard_summary()

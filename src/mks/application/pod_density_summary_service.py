@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Quick pod density check"""
 
-import json
-import subprocess
-import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
+
+from mks.infrastructure.kubectl_client import KubectlError, kubectl_json
 
 
 @dataclass
@@ -27,21 +26,14 @@ class NodeStats:
 def run_kubectl(cmd: str) -> dict[str, Any]:
     """Run kubectl command and return parsed JSON output"""
     try:
-        result = subprocess.run(
-            f"kubectl {cmd}", shell=True, capture_output=True, text=True, check=True
-        )
-        return json.loads(result.stdout)  # type: ignore[no-any-return]
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error running kubectl: {e}")
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        print(f"❌ Error parsing kubectl output: {e}")
-        sys.exit(1)
+        return kubectl_json(cmd)
+    except KubectlError as e:
+        raise RuntimeError(f"Error running kubectl: {e}") from e
 
 
-def main() -> None:
+def execute_pod_density_summary() -> None:
     """Analyze pod distribution across nodes and display statistics"""
-    pods = run_kubectl("get pods -A -o json")
+    pods = run_kubectl("get pods -A")
 
     node_stats: dict[str, NodeStats] = defaultdict(NodeStats)
 
@@ -64,5 +56,10 @@ def main() -> None:
         )
 
 
+def execute() -> None:
+    """Backward-compatible alias for execute_pod_density_summary."""
+    execute_pod_density_summary()
+
+
 if __name__ == "__main__":
-    main()
+    execute_pod_density_summary()

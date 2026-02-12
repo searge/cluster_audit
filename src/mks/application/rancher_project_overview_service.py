@@ -346,10 +346,16 @@ class SimpleRancherAnalyzer:
             traceback.print_exc()
 
 
-def main() -> None:
-    analyzer = SimpleRancherAnalyzer()
+def execute_rancher_project_overview(data_dir: str = "reports") -> None:
+    """Execute Rancher project overview use-case."""
+    analyzer = SimpleRancherAnalyzer(data_dir=data_dir)
     analyzer.run_analysis()
 
 
+def execute() -> None:
+    """Backward-compatible alias for execute_rancher_project_overview."""
+    execute_rancher_project_overview()
+
+
 if __name__ == "__main__":
-    main()
+    execute_rancher_project_overview()

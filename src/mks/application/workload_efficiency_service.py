@@ -4,11 +4,9 @@ Kubernetes Workload Resource Efficiency Table Generator
 Generates a table showing resource usage efficiency per workload (Deployment/StatefulSet/DaemonSet)
 """
 
-import argparse
 import csv
 import json
 import subprocess
-import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -89,8 +87,7 @@ class WorkloadEfficiencyAnalyzer:
             )
             return json.loads(result.stdout)  # type: ignore[no-any-return]
         except subprocess.CalledProcessError as e:
-            print(f"❌ Error running kubectl: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Error running kubectl: {e}") from e
 
     def run_kubectl_top(self, command: str) -> list[str]:
         """Execute kubectl top command and return output lines"""
@@ -472,35 +469,24 @@ class WorkloadEfficiencyAnalyzer:
             print(f"\n✅ Analysis completed! Found {len(metrics)} workloads.")
 
         except KeyboardInterrupt:
-            print("\n❌ Analysis interrupted by user")
-            sys.exit(1)
+            raise RuntimeError("Analysis interrupted by user")
         except Exception as e:
-            print(f"❌ Error during analysis: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Error during analysis: {e}") from e
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Kubernetes Workload Resource Efficiency Table Generator"
-    )
-    parser.add_argument(
-        "--include-system",
-        action="store_true",
-        help="Include system namespaces (kube-system, etc.) in analysis",
-    )
-    parser.add_argument(
-        "--data-dir",
-        default="reports",
-        help="Directory to save CSV reports (default: reports)",
-    )
-
-    args = parser.parse_args()
-
+def execute_workload_efficiency_audit(
+    *, include_system: bool = False, data_dir: str = "reports"
+) -> None:
+    """Execute workload efficiency audit use-case."""
     analyzer = WorkloadEfficiencyAnalyzer(
-        data_dir=args.data_dir, include_system=args.include_system
+        data_dir=data_dir, include_system=include_system
     )
     analyzer.run_analysis()
 
 
-if __name__ == "__main__":
-    main()
+def execute(*, include_system: bool = False, data_dir: str = "reports") -> None:
+    """Backward-compatible alias for execute_workload_efficiency_audit."""
+    execute_workload_efficiency_audit(
+        include_system=include_system,
+        data_dir=data_dir,
+    )

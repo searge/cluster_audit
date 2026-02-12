@@ -5,8 +5,6 @@ Tracks resource usage, limits, and trends over time
 """
 
 import json
-import subprocess
-import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -14,6 +12,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
+
+from mks.domain.namespace_policy import is_system_namespace
+from mks.domain.quantity_parser import parse_cpu, parse_memory
+from mks.infrastructure.kubectl_client import KubectlError, kubectl_json
 
 
 @dataclass
@@ -201,59 +203,26 @@ class K8sResourceAuditor:
 
     def is_system_namespace(self, namespace: str) -> bool:
         """Check if namespace should be excluded from audit"""
-        return (
-            namespace in self.system_namespaces
-            or namespace.startswith("cattle-")
-            or namespace.startswith("rancher-")
-            or namespace.startswith("kube-")
+        return is_system_namespace(
+            namespace,
+            extra_namespaces=frozenset(self.system_namespaces),
         )
 
     def run_kubectl(self, command: str) -> dict[str, Any]:
         """Execute kubectl command and return JSON output"""
         try:
-            cmd = f"kubectl {command} -o json"
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, check=True
-            )
-            return json.loads(result.stdout)  # type: ignore[no-any-return]
-        except subprocess.CalledProcessError as e:
+            return kubectl_json(command)
+        except KubectlError as e:
             print(f"❌ Error running kubectl: {e}")
-            sys.exit(1)
+            raise
 
     def parse_cpu(self, cpu_str: str) -> float:
         """Parse CPU string to millicores"""
-        if not cpu_str or cpu_str == "0":
-            return 0.0
-
-        cpu_str = str(cpu_str).lower()
-        if cpu_str.endswith("m"):
-            return float(cpu_str[:-1])
-        if cpu_str.endswith("u"):
-            return float(cpu_str[:-1]) / 1000
-        return float(cpu_str) * 1000
+        return float(parse_cpu(cpu_str))
 
     def parse_memory(self, memory_str: str) -> int:
         """Parse memory string to bytes"""
-        if not memory_str or memory_str == "0":
-            return 0
-
-        memory_str = str(memory_str).upper()
-        multipliers = {
-            "KI": 1024,
-            "K": 1000,
-            "MI": 1024**2,
-            "M": 1000**2,
-            "GI": 1024**3,
-            "G": 1000**3,
-            "TI": 1024**4,
-            "T": 1000**4,
-        }
-
-        for suffix, multiplier in multipliers.items():
-            if memory_str.endswith(suffix):
-                return int(float(memory_str[: -len(suffix)]) * multiplier)
-
-        return int(memory_str) if memory_str.isdigit() else 0
+        return parse_memory(memory_str)
 
     def get_node_type(self, node_name: str) -> str:
         """Determine node type from name"""
@@ -1183,22 +1152,16 @@ class K8sResourceAuditor:
         print("📈 Run regularly to track trends and improvements")
 
 
-def main() -> None:
-    import argparse
+def execute_resource_audit(mode: str = "current", data_dir: str = "reports") -> None:
+    """Execute resource audit use-case."""
+    auditor = K8sResourceAuditor(data_dir=data_dir)
+    auditor.run_audit(mode=mode)
 
-    parser = argparse.ArgumentParser(description="Kubernetes Resource Audit Tool")
-    parser.add_argument(
-        "--mode",
-        choices=["current", "extended"],
-        default="current",
-        help="Audit mode: current (standard reports) or extended (operational metrics)",
-    )
 
-    args = parser.parse_args()
-
-    auditor = K8sResourceAuditor()
-    auditor.run_audit(mode=args.mode)
+def execute(mode: str = "current", data_dir: str = "reports") -> None:
+    """Backward-compatible alias for execute_resource_audit."""
+    execute_resource_audit(mode=mode, data_dir=data_dir)
 
 
 if __name__ == "__main__":
-    main()
+    execute_resource_audit()

@@ -4,13 +4,15 @@ Real Kubernetes Resource Usage Analysis
 Compares actual usage vs requests/limits to find realistic values
 """
 
-import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+from mks.domain.quantity_parser import parse_cpu, parse_memory
+from mks.infrastructure.kubectl_client import KubectlError, kubectl_json
 
 
 class RealUsageAnalyzer:
@@ -22,51 +24,18 @@ class RealUsageAnalyzer:
     def run_kubectl(self, command: str) -> dict[str, Any]:
         """Execute kubectl command and return JSON output"""
         try:
-            cmd = f"kubectl {command} -o json"
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, check=True
-            )
-            return json.loads(result.stdout)  # type: ignore[no-any-return]
-        except subprocess.CalledProcessError as e:
+            return kubectl_json(command)
+        except KubectlError as e:
             print(f"❌ Error running kubectl: {e}")
             return {}
 
     def parse_cpu(self, cpu_str: str) -> float:
         """Parse CPU string to millicores"""
-        if not cpu_str or cpu_str == "0":
-            return 0.0
-
-        cpu_str = str(cpu_str).lower().strip()
-        if cpu_str.endswith("m"):
-            return float(cpu_str[:-1])
-        if cpu_str.endswith("u"):
-            return float(cpu_str[:-1]) / 1000
-        if cpu_str.endswith("n"):
-            return float(cpu_str[:-1]) / 1000000
-        return float(cpu_str) * 1000
+        return float(parse_cpu(cpu_str))
 
     def parse_memory(self, memory_str: str) -> int:
         """Parse memory string to bytes"""
-        if not memory_str or memory_str == "0":
-            return 0
-
-        memory_str = str(memory_str).upper().strip()
-        multipliers = {
-            "KI": 1024,
-            "K": 1000,
-            "MI": 1024**2,
-            "M": 1000**2,
-            "GI": 1024**3,
-            "G": 1000**3,
-            "TI": 1024**4,
-            "T": 1000**4,
-        }
-
-        for suffix, multiplier in multipliers.items():
-            if memory_str.endswith(suffix):
-                return int(float(memory_str[: -len(suffix)]) * multiplier)
-
-        return int(memory_str) if memory_str.isdigit() else 0
+        return parse_memory(memory_str)
 
     def get_pod_specs(self) -> dict[str, dict[str, Any]]:
         """Get resource specs for all running pods"""
@@ -491,10 +460,16 @@ class RealUsageAnalyzer:
         self.print_summary(recommendations)
 
 
-def main() -> None:
-    analyzer = RealUsageAnalyzer()
+def execute_usage_efficiency_audit(data_dir: str = "reports") -> None:
+    """Execute usage efficiency audit use-case."""
+    analyzer = RealUsageAnalyzer(data_dir=data_dir)
     analyzer.run_analysis()
 
 
+def execute() -> None:
+    """Backward-compatible alias for execute_usage_efficiency_audit."""
+    execute_usage_efficiency_audit()
+
+
 if __name__ == "__main__":
-    main()
+    execute_usage_efficiency_audit()
