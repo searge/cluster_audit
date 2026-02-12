@@ -6,7 +6,6 @@ Generates a table showing resource usage efficiency per workload
 """
 
 import csv
-import subprocess
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -14,9 +13,10 @@ from typing import Any, NamedTuple
 
 from mks.domain.namespace_policy import is_system_namespace
 from mks.domain.quantity_parser import parse_cpu, parse_memory
-from mks.infrastructure.kubectl_client import KubectlError, kubectl_json
+from mks.infrastructure.kubectl_client import KubectlError, kubectl_json, kubectl_text
 
 EXTRA_SYSTEM_NAMESPACES = frozenset({"cattle-system", "rancher-system"})
+_BYTES_IN_MB = 1024 * 1024
 
 
 class WorkloadMetrics(NamedTuple):
@@ -75,25 +75,14 @@ class WorkloadEfficiencyAnalyzer:
     def run_kubectl_top(self, command: str) -> list[str]:
         """Execute kubectl top command and return output lines"""
         try:
-            cmd = f"kubectl {command}"
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, check=True
-            )
-            return result.stdout.strip().split("\n")
-        except subprocess.CalledProcessError as e:
+            output = kubectl_text(command)
+            return output.strip().split("\n")
+        except KubectlError as e:
             print(
                 "⚠️  Warning: kubectl top command failed "
                 f"(metrics-server may not be available): {e}"
             )
             return []
-
-    def parse_cpu(self, cpu_str: str) -> int:
-        """Parse CPU string to millicores"""
-        return parse_cpu(cpu_str)
-
-    def parse_memory(self, memory_str: str) -> int:
-        """Parse memory string to MB"""
-        return int(parse_memory(memory_str) / (1024 * 1024))
 
     def get_pod_specs(self) -> dict[str, Any]:
         """Get resource specs for all pods"""
@@ -116,8 +105,8 @@ class WorkloadEfficiencyAnalyzer:
 
             namespace = parts[0]
             pod_name = parts[1]
-            cpu_usage = self.parse_cpu(parts[2])
-            memory_usage = self.parse_memory(parts[3])
+            cpu_usage = parse_cpu(parts[2])
+            memory_usage = int(parse_memory(parts[3]) / _BYTES_IN_MB)
 
             pod_key = f"{namespace}/{pod_name}"
             usage_data[pod_key] = {"cpu": cpu_usage, "memory": memory_usage}
@@ -233,10 +222,14 @@ class WorkloadEfficiencyAnalyzer:
                 resources = container.get("resources", {})
                 requests = resources.get("requests", {})
                 limits = resources.get("limits", {})
-                totals["cpu_req"] += self.parse_cpu(requests.get("cpu", "0"))
-                totals["cpu_lim"] += self.parse_cpu(limits.get("cpu", "0"))
-                totals["mem_req"] += self.parse_memory(requests.get("memory", "0"))
-                totals["mem_lim"] += self.parse_memory(limits.get("memory", "0"))
+                totals["cpu_req"] += parse_cpu(requests.get("cpu", "0"))
+                totals["cpu_lim"] += parse_cpu(limits.get("cpu", "0"))
+                totals["mem_req"] += int(
+                    parse_memory(requests.get("memory", "0")) / _BYTES_IN_MB
+                )
+                totals["mem_lim"] += int(
+                    parse_memory(limits.get("memory", "0")) / _BYTES_IN_MB
+                )
             totals["cpu_use"] += usage["cpu"]
             totals["mem_use"] += usage["memory"]
         return totals

@@ -378,7 +378,7 @@ def _build_maintenance_section() -> list[str]:
         "kubectl delete pod --field-selector=status.phase==Succeeded -A\n",
         "kubectl delete pod --field-selector=status.phase==Completed -A\n\n",
         "# Weekly audit\n",
-        "python3 resource_audit.py\n",
+        "mks resource-audit --report reports\n",
         "```\n",
     ]
 

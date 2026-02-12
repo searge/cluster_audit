@@ -95,7 +95,7 @@ def finalize_run(
         "error": error,
     }
     manifest_path.write_text(
-        json.dumps(manifest_payload, ensure_ascii=True, indent=2) + "\n",
+        json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 

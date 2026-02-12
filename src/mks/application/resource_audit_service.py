@@ -46,10 +46,6 @@ class K8sResourceAuditor:
         self.snapshots_file = self.data_dir / "audit_snapshots.json"
         self.trends_file = self.data_dir / "trends.csv"
 
-    def _is_system_namespace(self, namespace: str) -> bool:
-        """Check if namespace should be excluded from audit"""
-        return is_system_namespace(namespace)
-
     def _run_kubectl(self, command: str) -> dict[str, Any]:
         """Execute kubectl command and return JSON output"""
         try:
@@ -58,21 +54,15 @@ class K8sResourceAuditor:
             print(f"❌ Error running kubectl: {e}")
             raise
 
-    def _parse_cpu(self, cpu_str: str) -> float:
-        """Parse CPU string to millicores"""
-        return float(parse_cpu(cpu_str))
-
-    def _parse_memory(self, memory_str: str) -> int:
-        """Parse memory string to bytes"""
-        return parse_memory(memory_str)
-
-    def _get_node_type(self, node_name: str) -> str:
-        """Determine node type from name"""
-        if "monthly-b2-15" in node_name:
-            return "monthly-b2-15"
-        if "hourly-d2-8" in node_name:
-            return "hourly-d2-8"
-        return "unknown"
+    @staticmethod
+    def _extract_node_type(node: dict[str, Any]) -> str:
+        """Determine node type from standard Kubernetes labels."""
+        labels = node.get("metadata", {}).get("labels", {})
+        return str(
+            labels.get("node.kubernetes.io/instance-type")
+            or labels.get("beta.kubernetes.io/instance-type")
+            or "unknown"
+        )
 
     def _analyze_container(self, container: dict[str, Any]) -> ContainerResources:
         """Analyze single container resources"""
@@ -80,10 +70,10 @@ class K8sResourceAuditor:
         requests = resources.get("requests", {})
         limits = resources.get("limits", {})
 
-        cpu_request = self._parse_cpu(requests.get("cpu", "0"))
-        cpu_limit = self._parse_cpu(limits.get("cpu", "0"))
-        memory_request = self._parse_memory(requests.get("memory", "0Ki"))
-        memory_limit = self._parse_memory(limits.get("memory", "0Ki"))
+        cpu_request = float(parse_cpu(requests.get("cpu", "0")))
+        cpu_limit = float(parse_cpu(limits.get("cpu", "0")))
+        memory_request = parse_memory(requests.get("memory", "0Ki"))
+        memory_limit = parse_memory(limits.get("memory", "0Ki"))
 
         # Detect issues
         issues = []
@@ -119,7 +109,7 @@ class K8sResourceAuditor:
             cpu_limit=cpu_limit,
             memory_request=memory_request,
             memory_limit=memory_limit,
-            issues=issues,
+            issues=tuple(issues),
         )
 
     def collect_cluster_data(self) -> AuditSnapshot:
@@ -138,13 +128,11 @@ class K8sResourceAuditor:
             nodes.append(
                 NodeInfo(
                     name=name,
-                    node_type=self._get_node_type(name),
-                    cpu_capacity=self._parse_cpu(capacity.get("cpu", "0")),
-                    memory_capacity=self._parse_memory(capacity.get("memory", "0Ki")),
-                    cpu_allocatable=self._parse_cpu(allocatable.get("cpu", "0")),
-                    memory_allocatable=self._parse_memory(
-                        allocatable.get("memory", "0Ki")
-                    ),
+                    node_type=self._extract_node_type(node),
+                    cpu_capacity=float(parse_cpu(capacity.get("cpu", "0"))),
+                    memory_capacity=parse_memory(capacity.get("memory", "0Ki")),
+                    cpu_allocatable=float(parse_cpu(allocatable.get("cpu", "0"))),
+                    memory_allocatable=parse_memory(allocatable.get("memory", "0Ki")),
                     pod_capacity=int(capacity.get("pods", "0")),
                 )
             )
@@ -156,13 +144,13 @@ class K8sResourceAuditor:
         for pod in pods_data["items"]:
             # Skip system namespaces and only include running pods for resource analysis
             namespace = pod["metadata"]["namespace"]
-            if pod["status"]["phase"] == "Running" and not self._is_system_namespace(
+            if pod["status"]["phase"] == "Running" and not is_system_namespace(
                 namespace
             ):
-                containers = [
+                containers = tuple(
                     self._analyze_container(container)
                     for container in pod["spec"]["containers"]
-                ]
+                )
 
                 pods.append(
                     PodInfo(
@@ -178,8 +166,8 @@ class K8sResourceAuditor:
 
         return AuditSnapshot(
             timestamp=self.timestamp,
-            nodes=nodes,
-            pods=pods,
+            nodes=tuple(nodes),
+            pods=tuple(pods),
             cluster_stats=cluster_stats,
         )
 
@@ -349,7 +337,7 @@ class K8sResourceAuditor:
         issues = self._detect_over_capacity_nodes(snapshot, node_usage)
         for pod in all_pods_data["items"]:
             namespace = pod["metadata"]["namespace"]
-            if self._is_system_namespace(namespace):
+            if is_system_namespace(namespace):
                 continue
             issue = self._build_non_running_issue(pod)
             if issue is not None:
@@ -365,7 +353,7 @@ class K8sResourceAuditor:
         )
         for pod in all_pods_data["items"]:
             namespace = pod["metadata"]["namespace"]
-            if self._is_system_namespace(namespace):
+            if is_system_namespace(namespace):
                 continue
             node_name = pod["spec"].get("nodeName", "Unknown")
             phase = pod["status"]["phase"]
@@ -509,8 +497,8 @@ class K8sResourceAuditor:
         for container in pod["spec"]["containers"]:
             resources = container.get("resources", {})
             requests = resources.get("requests", {})
-            cpu_request += self._parse_cpu(requests.get("cpu", "0"))
-            memory_request += self._parse_memory(requests.get("memory", "0Ki"))
+            cpu_request += float(parse_cpu(requests.get("cpu", "0")))
+            memory_request += parse_memory(requests.get("memory", "0Ki"))
         return cpu_request, memory_request
 
     @staticmethod

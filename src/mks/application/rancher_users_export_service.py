@@ -3,14 +3,12 @@
 
 import asyncio
 import importlib
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from dotenv import load_dotenv
-
+from mks.config import RancherConfig
 from mks.domain.rancher_namespace import extract_rancher_namespace_project
 from mks.infrastructure.kubectl_client import kubectl_json
 from mks.infrastructure.rancher_client import (
@@ -29,11 +27,6 @@ class NamespaceInfo:
     project_name: str
     display_name: str
     description: str
-
-
-def load_env_file(path: Path) -> None:
-    """Load environment variables from .env if present."""
-    load_dotenv(path, override=False)
 
 
 def get_namespaces_info(target_namespaces: set[str]) -> list[NamespaceInfo]:
@@ -61,28 +54,22 @@ def get_namespaces_info(target_namespaces: set[str]) -> list[NamespaceInfo]:
     return infos
 
 
-def load_config() -> tuple[str, str | None, str | None, str | None]:
-    """Load Rancher credentials from environment.
-
-    Returns
-    -------
-    tuple[str, str | None, str | None, str | None]
-        Rancher URL, token, access key, secret key.
-    """
-    load_env_file(Path(".env"))
-
-    rancher_url = os.getenv("RANCHER_URL")
-    rancher_token = os.getenv("RANCHER_TOKEN")
-    rancher_ak = os.getenv("RANCHER_AK")
-    rancher_sk = os.getenv("RANCHER_SK")
-
+def resolve_rancher_credentials(
+    rancher_config: RancherConfig | None,
+) -> tuple[str, str | None, str | None, str | None]:
+    """Resolve and validate Rancher credentials."""
+    if rancher_config is None:
+        raise ValueError("Rancher config was not provided")
+    rancher_url = rancher_config.url
+    rancher_token = rancher_config.token
+    rancher_ak = rancher_config.ak
+    rancher_sk = rancher_config.sk
     if not rancher_url:
         raise ValueError("RANCHER_URL not set (env or .env)")
     if not rancher_token and not (rancher_ak and rancher_sk):
         raise ValueError(
             "Rancher credentials not set (RANCHER_TOKEN or RANCHER_AK/RANCHER_SK)"
         )
-
     return rancher_url, rancher_token, rancher_ak, rancher_sk
 
 
@@ -396,6 +383,7 @@ async def execute_rancher_users_export_async(
     namespaces_raw: str,
     data_dir: str = "reports",
     *,
+    rancher_config: RancherConfig | None = None,
     cache_dir: str = "cache/rancher_users",
     cache_ttl_seconds: int = 3600,
 ) -> Path:
@@ -418,7 +406,9 @@ async def execute_rancher_users_export_async(
         Path to generated CSV report.
     """
     namespaces = parse_namespaces(namespaces_raw)
-    rancher_url, rancher_token, rancher_ak, rancher_sk = load_config()
+    rancher_url, rancher_token, rancher_ak, rancher_sk = resolve_rancher_credentials(
+        rancher_config
+    )
 
     ns_infos = fetch_ns_infos(namespaces)
     warn_missing_namespaces(namespaces, ns_infos)
@@ -439,6 +429,7 @@ def execute_rancher_users_export(
     namespaces_raw: str,
     data_dir: str = "reports",
     *,
+    rancher_config: RancherConfig | None = None,
     cache_dir: str = "cache/rancher_users",
     cache_ttl_seconds: int = 3600,
 ) -> Path:
@@ -464,6 +455,7 @@ def execute_rancher_users_export(
         execute_rancher_users_export_async(
             namespaces_raw,
             data_dir=data_dir,
+            rancher_config=rancher_config,
             cache_dir=cache_dir,
             cache_ttl_seconds=cache_ttl_seconds,
         )
@@ -474,6 +466,7 @@ async def execute_async(
     namespaces_raw: str,
     data_dir: str = "reports",
     *,
+    rancher_config: RancherConfig | None = None,
     cache_dir: str = "cache/rancher_users",
     cache_ttl_seconds: int = 3600,
 ) -> Path:
@@ -481,6 +474,7 @@ async def execute_async(
     return await execute_rancher_users_export_async(
         namespaces_raw,
         data_dir=data_dir,
+        rancher_config=rancher_config,
         cache_dir=cache_dir,
         cache_ttl_seconds=cache_ttl_seconds,
     )
@@ -490,6 +484,7 @@ def execute(
     namespaces_raw: str,
     data_dir: str = "reports",
     *,
+    rancher_config: RancherConfig | None = None,
     cache_dir: str = "cache/rancher_users",
     cache_ttl_seconds: int = 3600,
 ) -> Path:
@@ -497,6 +492,7 @@ def execute(
     return execute_rancher_users_export(
         namespaces_raw,
         data_dir=data_dir,
+        rancher_config=rancher_config,
         cache_dir=cache_dir,
         cache_ttl_seconds=cache_ttl_seconds,
     )

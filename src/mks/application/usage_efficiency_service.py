@@ -4,7 +4,6 @@ Real Kubernetes Resource Usage Analysis
 Compares actual usage vs requests/limits to find realistic values
 """
 
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,7 +11,11 @@ from typing import Any
 import pandas as pd
 
 from mks.domain.quantity_parser import parse_cpu, parse_memory
-from mks.infrastructure.kubectl_client import kubectl_json_or_empty
+from mks.infrastructure.kubectl_client import (
+    KubectlError,
+    kubectl_json_or_empty,
+    kubectl_text,
+)
 
 
 class RealUsageAnalyzer:
@@ -26,14 +29,6 @@ class RealUsageAnalyzer:
     def run_kubectl(self, command: str) -> dict[str, Any]:
         """Execute kubectl command and return JSON output"""
         return kubectl_json_or_empty(command)
-
-    def parse_cpu(self, cpu_str: str) -> float:
-        """Parse CPU string to millicores"""
-        return float(parse_cpu(cpu_str))
-
-    def parse_memory(self, memory_str: str) -> int:
-        """Parse memory string to bytes"""
-        return parse_memory(memory_str)
 
     @staticmethod
     def _calculate_pod_totals(spec: dict[str, Any]) -> tuple[float, float, int, int]:
@@ -228,12 +223,10 @@ class RealUsageAnalyzer:
                 containers.append(
                     {
                         "name": container["name"],
-                        "cpu_request": self.parse_cpu(requests.get("cpu", "0")),
-                        "cpu_limit": self.parse_cpu(limits.get("cpu", "0")),
-                        "memory_request": self.parse_memory(
-                            requests.get("memory", "0Ki")
-                        ),
-                        "memory_limit": self.parse_memory(limits.get("memory", "0Ki")),
+                        "cpu_request": float(parse_cpu(requests.get("cpu", "0"))),
+                        "cpu_limit": float(parse_cpu(limits.get("cpu", "0"))),
+                        "memory_request": parse_memory(requests.get("memory", "0Ki")),
+                        "memory_limit": parse_memory(limits.get("memory", "0Ki")),
                     }
                 )
 
@@ -251,16 +244,10 @@ class RealUsageAnalyzer:
 
         # Get pod metrics
         try:
-            result = subprocess.run(
-                "kubectl top pods -A --no-headers",
-                shell=True,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
+            output = kubectl_text("top pods -A --no-headers")
 
             real_usage = {}
-            for line in result.stdout.strip().split("\n"):
+            for line in output.strip().split("\n"):
                 if not line.strip():
                     continue
 
@@ -273,13 +260,13 @@ class RealUsageAnalyzer:
 
                     pod_key = f"{namespace}/{pod_name}"
                     real_usage[pod_key] = {
-                        "cpu_usage": self.parse_cpu(cpu_usage),
-                        "memory_usage": self.parse_memory(memory_usage),
+                        "cpu_usage": float(parse_cpu(cpu_usage)),
+                        "memory_usage": parse_memory(memory_usage),
                     }
 
             return real_usage
 
-        except subprocess.CalledProcessError as e:
+        except KubectlError as e:
             print(f"⚠️  Could not get metrics: {e}")
             print("   Make sure metrics-server is running in the cluster")
             return {}

@@ -12,6 +12,7 @@ from mks.application.use_case_utils import (
     finalize_success_run,
     render_stdout_with_tempdir,
 )
+from mks.config import load_config
 
 
 def execute_deletion_investigation(
@@ -22,6 +23,7 @@ def execute_deletion_investigation(
 ) -> RunResult | None:
     """Execute deletion investigation."""
     if reports_root is None:
+        config = load_config()
         render_stdout_with_tempdir(
             title="Deletion Investigation",
             temp_prefix="mks_deletion_investigation_",
@@ -29,6 +31,7 @@ def execute_deletion_investigation(
                 namespaces_raw,
                 output_dir=tmp_dir,
                 skip_rancher=skip_rancher,
+                rancher_config=config.rancher,
             ),
         )
         return None
@@ -41,10 +44,12 @@ def execute_deletion_investigation(
         },
         reports_root=reports_root,
     )
+    config = load_config()
     report_path = _service(
         namespaces_raw,
         output_dir=str(ctx.output_dir),
         skip_rancher=skip_rancher,
+        rancher_config=config.rancher,
     )
     return finalize_success_run(
         ctx,

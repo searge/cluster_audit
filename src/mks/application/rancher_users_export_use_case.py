@@ -22,6 +22,7 @@ from mks.application.use_case_utils import (
     finalize_success_run,
     render_stdout_with_tempdir,
 )
+from mks.config import load_config
 
 
 def execute_rancher_users_export(
@@ -32,6 +33,7 @@ def execute_rancher_users_export(
     cache_ttl_seconds: int = 3600,
 ) -> RunResult | None:
     """Execute Rancher users export."""
+    config = load_config()
     if reports_root is None:
         render_stdout_with_tempdir(
             title="Rancher Users Export",
@@ -39,6 +41,7 @@ def execute_rancher_users_export(
             runner=lambda tmp_dir: _service(
                 namespaces_raw,
                 data_dir=tmp_dir,
+                rancher_config=config.rancher,
                 cache_dir=cache_dir,
                 cache_ttl_seconds=cache_ttl_seconds,
             ),
@@ -57,6 +60,7 @@ def execute_rancher_users_export(
     out_file = _service(
         namespaces_raw,
         data_dir=str(ctx.output_dir),
+        rancher_config=config.rancher,
         cache_dir=cache_dir,
         cache_ttl_seconds=cache_ttl_seconds,
     )
@@ -81,6 +85,7 @@ async def execute_rancher_users_export_async(
     cache_ttl_seconds: int = 3600,
 ) -> RunResult | None:
     """Async variant of Rancher users export use-case."""
+    config = load_config()
     if reports_root is None:
         with TemporaryDirectory(prefix="mks_rancher_users_async_") as tmp_dir:
             buffer = StringIO()
@@ -88,6 +93,7 @@ async def execute_rancher_users_export_async(
                 await _service_async(
                     namespaces_raw,
                     data_dir=tmp_dir,
+                    rancher_config=config.rancher,
                     cache_dir=cache_dir,
                     cache_ttl_seconds=cache_ttl_seconds,
                 )
@@ -111,6 +117,7 @@ async def execute_rancher_users_export_async(
     out_file = await _service_async(
         namespaces_raw,
         data_dir=str(ctx.output_dir),
+        rancher_config=config.rancher,
         cache_dir=cache_dir,
         cache_ttl_seconds=cache_ttl_seconds,
     )

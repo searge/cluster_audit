@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Literal, NamedTuple
 
 
-@dataclass
+@dataclass(frozen=True)
 class ContainerResources:
     """Container resource specification."""
 
@@ -16,7 +16,7 @@ class ContainerResources:
     cpu_limit: float
     memory_request: int
     memory_limit: int
-    issues: list[str]
+    issues: tuple[str, ...]
 
     @property
     def cpu_ratio(self) -> float:
@@ -40,14 +40,14 @@ class ContainerResources:
         return "LOW"
 
 
-@dataclass
+@dataclass(frozen=True)
 class PodInfo:
     """Pod information with containers."""
 
     name: str
     namespace: str
     node: str
-    containers: list[ContainerResources]
+    containers: tuple[ContainerResources, ...]
 
     @property
     def total_cpu_request(self) -> float:
@@ -75,7 +75,7 @@ class PodInfo:
         return any(c.issues for c in self.containers)
 
 
-@dataclass
+@dataclass(frozen=True)
 class NodeInfo:
     """Node capacity and type information."""
 
@@ -134,13 +134,13 @@ class SchedulingIssue(NamedTuple):
     memory_request: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class AuditSnapshot:
     """Complete audit snapshot at a point in time."""
 
     timestamp: datetime
-    nodes: list[NodeInfo]
-    pods: list[PodInfo]
+    nodes: tuple[NodeInfo, ...]
+    pods: tuple[PodInfo, ...]
     cluster_stats: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
@@ -157,15 +157,18 @@ class AuditSnapshot:
         """Create from dict."""
         return cls(
             timestamp=datetime.fromisoformat(data["timestamp"]),
-            nodes=[NodeInfo(**node) for node in data["nodes"]],
-            pods=[
+            nodes=tuple(NodeInfo(**node) for node in data["nodes"]),
+            pods=tuple(
                 PodInfo(
                     name=pod["name"],
                     namespace=pod["namespace"],
                     node=pod["node"],
-                    containers=[ContainerResources(**c) for c in pod["containers"]],
+                    containers=tuple(
+                        ContainerResources(**container)
+                        for container in pod["containers"]
+                    ),
                 )
                 for pod in data["pods"]
-            ],
+            ),
             cluster_stats=data["cluster_stats"],
         )

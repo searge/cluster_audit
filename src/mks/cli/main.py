@@ -1,5 +1,8 @@
 """CLI entrypoint for mks audit tooling."""
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
+
 import typer
 from rich.console import Console
 
@@ -26,6 +29,14 @@ app = typer.Typer(
 console = Console()
 
 
+def _resolve_version() -> str:
+    """Return installed package version or local fallback."""
+    try:
+        return package_version("mks-audit")
+    except PackageNotFoundError:
+        return "0.1.0"
+
+
 @app.callback()
 def callback(
     ctx: typer.Context,
@@ -37,7 +48,7 @@ def callback(
 ) -> None:
     """Handle global CLI options."""
     if version:
-        console.print("mks-audit 0.1.0")
+        console.print(f"mks-audit {_resolve_version()}")
         raise typer.Exit(code=0)
     if ctx.invoked_subcommand is None:
         raise typer.Exit(code=0)

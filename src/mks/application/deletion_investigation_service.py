@@ -14,106 +14,67 @@ Usage:
   python scripts/investigate_deletions.py --namespaces oro-commerce-demo,drupalmcptest
 """
 
-import base64
-import json
-import os
-import subprocess
+import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
+from mks.config import RancherConfig
+from mks.infrastructure.kubectl_client import kubectl_json_or_empty
+from mks.infrastructure.rancher_client import (
+    RancherApiError,
+    RancherAuth,
+    RancherClient,
+)
 
 
-# ---------------------------------------------------------------------------
-# Rancher client (reused pattern from rancher_project_users.py)
-# ---------------------------------------------------------------------------
-class RancherClient:
-    """Minimal Rancher API client using stdlib HTTP."""
+class RancherSyncAdapter:
+    """Sync adapter over async Rancher client for investigation service."""
 
-    def __init__(
-        self, base_url: str, token: str | None, ak: str | None, sk: str | None
-    ):
-        self.base_url = base_url.rstrip("/")
-        self.token = token
-        self.ak = ak
-        self.sk = sk
-        self.default_headers = {"Accept": "application/json"}
+    def __init__(self, rancher: RancherConfig):
+        self.base_url = (rancher.url or "").rstrip("/")
+        self.auth = RancherAuth(
+            token=rancher.token,
+            ak=rancher.ak,
+            sk=rancher.sk,
+        )
 
-    def get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        """GET JSON from Rancher API."""
-        query = f"?{urlencode(params)}" if params else ""
-        url = f"{self.base_url}{path}{query}"
+    async def _get_async(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        async with RancherClient(self.base_url, auth=self.auth) as client:
+            return await client.get(path, params=params)
 
-        def do_request(headers: dict[str, str]) -> tuple[int, str]:
-            req = Request(url, headers=headers, method="GET")
-            try:
-                with urlopen(req, timeout=30) as resp:
-                    return resp.status, resp.read().decode("utf-8")
-            except HTTPError as exc:
-                body = exc.read().decode("utf-8") if exc.fp else ""
-                return exc.code, body
-            except URLError as exc:
-                raise RuntimeError(f"Rancher API request failed: {exc}") from exc
+    async def _try_get_async(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        async with RancherClient(self.base_url, auth=self.auth) as client:
+            return await client.try_get(path, params=params)
 
-        headers = dict(self.default_headers)
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        elif self.ak and self.sk:
-            cred = base64.b64encode(f"{self.ak}:{self.sk}".encode()).decode()
-            headers["Authorization"] = f"Basic {cred}"
-
-        status, body = do_request(headers)
-        if status == 401 and self.token and self.ak and self.sk:
-            cred = base64.b64encode(f"{self.ak}:{self.sk}".encode()).decode()
-            retry_headers = dict(self.default_headers)
-            retry_headers["Authorization"] = f"Basic {cred}"
-            status, body = do_request(retry_headers)
-
-        if status >= 400:
-            raise RuntimeError(f"Rancher API error {status} for {path}: {body[:200]}")
-        return cast(dict[str, Any], json.loads(body))
+    def get(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Return Rancher response payload or raise on request failure."""
+        return asyncio.run(self._get_async(path, params=params))
 
     def try_get(
-        self, path: str, params: dict[str, str] | None = None
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
-        """GET that returns None on error instead of raising."""
+        """Return Rancher response payload or None when request fails."""
         try:
-            return self.get(path, params)
-        except RuntimeError as exc:
+            return asyncio.run(self._try_get_async(path, params=params))
+        except RancherApiError as exc:
             print(f"  WARN: {exc}")
             return None
-
-
-# ---------------------------------------------------------------------------
-# kubectl helpers
-# ---------------------------------------------------------------------------
-def kubectl_json(command: str) -> dict[str, Any] | None:
-    """Run kubectl and return parsed JSON, or None on error."""
-    cmd = f"kubectl {command} -o json"
-    try:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, check=True
-        )
-        return cast(dict[str, Any], json.loads(result.stdout))
-    except (subprocess.CalledProcessError, json.JSONDecodeError):
-        return None
-
-
-def kubectl_text(command: str) -> str:
-    """Run kubectl and return raw text output."""
-    cmd = f"kubectl {command}"
-    try:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, check=True
-        )
-        return result.stdout
-    except subprocess.CalledProcessError:
-        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +82,7 @@ def kubectl_text(command: str) -> str:
 # ---------------------------------------------------------------------------
 def investigate_k8s_events(namespace: str) -> list[dict[str, str]]:
     """Fetch k8s events for a namespace, focusing on deletions/kills."""
-    data = kubectl_json(f"get events -n {namespace} --sort-by=.lastTimestamp")
+    data = kubectl_json_or_empty(f"get events -n {namespace} --sort-by=.lastTimestamp")
     if not data:
         return []
 
@@ -158,7 +119,7 @@ def investigate_k8s_events(namespace: str) -> list[dict[str, str]]:
 
 def investigate_namespace_meta(namespace: str) -> dict[str, Any]:
     """Get namespace metadata: annotations, labels, timestamps."""
-    data = kubectl_json(f"get namespace {namespace}")
+    data = kubectl_json_or_empty(f"get namespace {namespace}")
     if not data:
         return {}
 
@@ -179,7 +140,7 @@ def investigate_namespace_meta(namespace: str) -> dict[str, Any]:
 
 def investigate_deployments(namespace: str) -> list[dict[str, Any]]:
     """Check deployment status: replicas, conditions, last update."""
-    data = kubectl_json(f"get deployments -n {namespace}")
+    data = kubectl_json_or_empty(f"get deployments -n {namespace}")
     if not data:
         return []
 
@@ -212,7 +173,7 @@ def investigate_deployments(namespace: str) -> list[dict[str, Any]]:
 
 def investigate_replicasets(namespace: str) -> list[dict[str, Any]]:
     """Check recent ReplicaSet changes (scale to 0 = potential deletion)."""
-    data = kubectl_json(f"get replicasets -n {namespace}")
+    data = kubectl_json_or_empty(f"get replicasets -n {namespace}")
     if not data:
         return []
 
@@ -237,7 +198,7 @@ def investigate_replicasets(namespace: str) -> list[dict[str, Any]]:
 
 def investigate_pods_age(namespace: str) -> list[dict[str, Any]]:
     """List pods with their age and restart count."""
-    data = kubectl_json(f"get pods -n {namespace}")
+    data = kubectl_json_or_empty(f"get pods -n {namespace}")
     if not data:
         return []
 
@@ -258,7 +219,8 @@ def investigate_pods_age(namespace: str) -> list[dict[str, Any]]:
 
 
 def investigate_rancher_project_access(
-    client: RancherClient, project_id: str
+    client: RancherSyncAdapter,
+    project_id: str,
 ) -> list[dict[str, Any]]:
     """List who has access to a Rancher project."""
     data = client.try_get(
@@ -297,7 +259,7 @@ def investigate_rancher_project_access(
 
 
 def investigate_rancher_tokens(
-    client: RancherClient,
+    client: RancherSyncAdapter,
 ) -> list[dict[str, Any]]:
     """List active Rancher tokens with last-used timestamps."""
     data = client.try_get("/v3/tokens", params={"limit": "100"})
@@ -327,7 +289,8 @@ def investigate_rancher_tokens(
 
 
 def investigate_rancher_cluster_members(
-    client: RancherClient, cluster_id: str
+    client: RancherSyncAdapter,
+    cluster_id: str,
 ) -> list[dict[str, Any]]:
     """List cluster role bindings (cluster-level access)."""
     data = client.try_get(
@@ -383,7 +346,7 @@ def print_subsection(title: str) -> None:
 def _report_namespace_details(
     ns: str,
     *,
-    client: RancherClient | None,
+    client: RancherSyncAdapter | None,
     out: Callable[[str], None],
 ) -> None:
     """Emit investigation details for one namespace."""
@@ -493,7 +456,7 @@ def _report_deletion_events(ns: str, *, out: Callable[[str], None]) -> None:
 
 
 def _report_rancher_project_access(
-    client: RancherClient,
+    client: RancherSyncAdapter,
     *,
     project_id: str,
     out: Callable[[str], None],
@@ -512,7 +475,7 @@ def _report_rancher_project_access(
 
 def _report_cluster_wide_activity(
     *,
-    client: RancherClient,
+    client: RancherSyncAdapter,
     cluster_id: str,
     out: Callable[[str], None],
 ) -> None:
@@ -580,7 +543,7 @@ def _report_investigation_hints(out: Callable[[str], None]) -> None:
 def _report_namespaces(
     namespaces: list[str],
     *,
-    client: RancherClient | None,
+    client: RancherSyncAdapter | None,
     out: Callable[[str], None],
 ) -> None:
     """Emit per-namespace investigation sections."""
@@ -590,7 +553,7 @@ def _report_namespaces(
 
 def generate_report(
     namespaces: list[str],
-    client: RancherClient | None,
+    client: RancherSyncAdapter | None,
     cluster_id: str,
     output_dir: Path,
 ) -> Path:
@@ -625,18 +588,7 @@ def generate_report(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def load_config() -> tuple[str, str | None, str | None, str | None]:
-    """Load Rancher config from .env."""
-    load_dotenv(Path(".env"), override=False)
-
-    rancher_url = os.getenv("RANCHER_URL", "")
-    rancher_token = os.getenv("RANCHER_TOKEN")
-    rancher_ak = os.getenv("RANCHER_AK")
-    rancher_sk = os.getenv("RANCHER_SK")
-    return rancher_url, rancher_token, rancher_ak, rancher_sk
-
-
-def detect_cluster_id(client: RancherClient) -> str:
+def detect_cluster_id(client: RancherSyncAdapter) -> str:
     """Auto-detect cluster ID (first non-local cluster)."""
     data = client.try_get("/v3/clusters")
     if not data:
@@ -652,21 +604,25 @@ def execute_deletion_investigation(
     output_dir: str = "reports",
     *,
     skip_rancher: bool = False,
+    rancher_config: RancherConfig | None = None,
 ) -> Path:
     """Execute deletion investigation use-case and return report path."""
     namespaces = [ns.strip() for ns in namespaces_raw.split(",") if ns.strip()]
     if not namespaces:
         raise ValueError("No namespaces provided")
 
-    client: RancherClient | None = None
+    client: RancherSyncAdapter | None = None
     cluster_id = ""
 
     if not skip_rancher:
-        rancher_url, rancher_token, rancher_ak, rancher_sk = load_config()
-        if rancher_url and (rancher_token or (rancher_ak and rancher_sk)):
-            client = RancherClient(rancher_url, rancher_token, rancher_ak, rancher_sk)
+        if (
+            rancher_config
+            and rancher_config.url
+            and (rancher_config.token or (rancher_config.ak and rancher_config.sk))
+        ):
+            client = RancherSyncAdapter(rancher_config)
             cluster_id = detect_cluster_id(client)
-            print(f"Rancher: {rancher_url} | Cluster: {cluster_id}")
+            print(f"Rancher: {rancher_config.url} | Cluster: {cluster_id}")
         else:
             print("WARN: Rancher not configured, running kubectl-only mode")
 
@@ -678,10 +634,12 @@ def execute(
     output_dir: str = "reports",
     *,
     skip_rancher: bool = False,
+    rancher_config: RancherConfig | None = None,
 ) -> Path:
     """Backward-compatible alias for execute_deletion_investigation."""
     return execute_deletion_investigation(
         namespaces_raw,
         output_dir=output_dir,
         skip_rancher=skip_rancher,
+        rancher_config=rancher_config,
     )
