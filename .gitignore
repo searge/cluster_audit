@@ -15,3 +15,7 @@ wheels/
 reports/
 cache/
 tmp
+
+
+#Ignore cursor AI rules
+.cursor
