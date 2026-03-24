@@ -809,6 +809,88 @@ def build_top_waste_table(usage_df, top_n=15):
     return display_df, cpu_top
 
 
+def build_namespace_contributors_table(namespaces_df, usage_df, top_n=15):
+    if namespaces_df.empty or usage_df.empty:
+        return pd.DataFrame()
+
+    efficiency_df = (
+        usage_df.groupby("namespace")
+        .agg(
+            {
+                "cpu_efficiency_pct": "mean",
+                "memory_efficiency_pct": "mean",
+                "cpu_request_waste_m": "sum",
+                "memory_request_waste_mb": "sum",
+            }
+        )
+        .reset_index()
+    )
+    contributors_df = namespaces_df.merge(
+        efficiency_df,
+        on="namespace",
+        how="left",
+    )
+    total_cpu_waste = contributors_df["cpu_request_waste_m"].sum()
+    total_memory_waste = contributors_df["memory_request_waste_mb"].sum()
+    contributors_df["cpu_waste_share_pct"] = (
+        contributors_df["cpu_request_waste_m"] / total_cpu_waste * 100
+        if total_cpu_waste
+        else 0
+    )
+    contributors_df["memory_waste_share_pct"] = (
+        contributors_df["memory_request_waste_mb"] / total_memory_waste * 100
+        if total_memory_waste
+        else 0
+    )
+
+    display_df = (
+        contributors_df.sort_values("cpu_request_waste_m", ascending=False)
+        .head(top_n)
+        .loc[
+            :,
+            [
+                "namespace",
+                "pod_count",
+                "cpu_request_waste_m",
+                "cpu_waste_share_pct",
+                "cpu_efficiency_pct",
+                "memory_request_waste_mb",
+                "memory_waste_share_pct",
+                "memory_efficiency_pct",
+                "critical_issues",
+                "high_issues",
+                "medium_issues",
+            ],
+        ]
+        .copy()
+    )
+    display_df.columns = [
+        "Namespace",
+        "Pods",
+        "CPU Wasted (m)",
+        "CPU Waste Share %",
+        "CPU Efficiency %",
+        "Mem Wasted (Mi)",
+        "Mem Waste Share %",
+        "Mem Efficiency %",
+        "Critical",
+        "High",
+        "Medium",
+    ]
+
+    for column in [
+        "CPU Wasted (m)",
+        "CPU Waste Share %",
+        "CPU Efficiency %",
+        "Mem Wasted (Mi)",
+        "Mem Waste Share %",
+        "Mem Efficiency %",
+    ]:
+        display_df[column] = display_df[column].astype(float).round(1)
+
+    return display_df
+
+
 # %%
 # @title CPU Waste by Namespace (Divergent)
 render_namespace_waste_chart(
@@ -843,3 +925,15 @@ if display_df.empty:
 else:
     display(display_df)
     print(f"→ Top 5 optimization: {cpu_top5:.0f}m CPU")
+
+# %%
+# @title Top Waste Contributors by Namespace
+contributors_df = build_namespace_contributors_table(
+    namespaces_df,
+    usage_df,
+    top_n=15,
+)
+if contributors_df.empty:
+    print("No namespace contributor data available.")
+else:
+    display(contributors_df)
