@@ -1,0 +1,18 @@
+# OVH price reference for rightsizing (EUR, excl. VAT).
+#
+# Edit these by hand when OVH changes pricing. Source of truth is the OVH
+# catalog API (GET /order/catalog/public/cloud, subsidiary FR); values below are
+# the pre-filled snapshot taken on 2026-06-18 (priceInUcents / 1e8 = EUR).
+# Region SBG5 / continental EU. Cross-checked against real bills (b2-15 = 48.05).
+
+[flavors.b2-15]
+monthly_eur = 48.05
+hourly_eur = 0.1342
+
+[flavors.d2-8]
+hourly_eur = 0.0372
+# d2-8 has no monthly forfait in this project (hourly node pool).
+
+[volume]
+# High-speed (SSD) block storage, per GB.
+high_speed_eur_per_gb_month = 0.086

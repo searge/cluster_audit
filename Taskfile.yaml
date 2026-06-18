@@ -21,6 +21,16 @@ tasks:
     cmds:
       - '{{.UV_ENV}} uv run mks {{.CLI_ARGS | default "--help"}}'
 
+  ovh:
+    desc: "Run any OVH-API mks command with the ovh extra (example: task ovh -- cluster-inventory -r reports)"
+    cmds:
+      - '{{.UV_ENV}} uv run --extra ovh mks {{.CLI_ARGS | default "--help"}}'
+
+  billing:
+    desc: "Export [OVH MKS] Payment CSV (example: task billing -- --from 2025-02 --to 2026-06 -r reports)"
+    cmds:
+      - '{{.UV_ENV}} uv run --extra ovh mks billing-export {{.CLI_ARGS | default "--help"}}'
+
   lint:
     desc: Run code quality checks
     cmds:

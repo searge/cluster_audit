@@ -1,6 +1,7 @@
 """Application configuration and environment loading."""
 
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -127,6 +128,38 @@ class AuditConfig:
         return bool(self.ldp_websocket_url)
 
 
+@dataclass(frozen=True)
+class FlavorPrice:
+    """Reference price for a node flavor (EUR, excl. VAT)."""
+
+    monthly_eur: float | None = None
+    hourly_eur: float | None = None
+
+
+@dataclass(frozen=True)
+class Prices:
+    """Editable OVH price reference, loaded from ``config/ovh_prices.toml``."""
+
+    flavors: dict[str, FlavorPrice] = field(default_factory=dict)
+    volume_high_speed_eur_per_gb_month: float = 0.0
+
+
+def load_prices(path: Path = Path("config/ovh_prices.toml")) -> Prices:
+    """Load the editable price reference; empty ``Prices`` if the file is absent."""
+    if not path.exists():
+        return Prices()
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    flavors = {
+        name: FlavorPrice(
+            monthly_eur=spec.get("monthly_eur"),
+            hourly_eur=spec.get("hourly_eur"),
+        )
+        for name, spec in (raw.get("flavors") or {}).items()
+    }
+    volume = (raw.get("volume") or {}).get("high_speed_eur_per_gb_month", 0.0)
+    return Prices(flavors=flavors, volume_high_speed_eur_per_gb_month=float(volume))
+
+
 def load_config(env_path: Path = Path(".env")) -> AuditConfig:
     """Load config from environment and optional .env file."""
     load_dotenv(env_path, override=False)
@@ -135,8 +168,11 @@ def load_config(env_path: Path = Path(".env")) -> AuditConfig:
         kubeconfig=Path(kubeconfig_raw) if kubeconfig_raw else None,
         ovh=OvhConfig(
             endpoint=os.getenv("OVH_ENDPOINT"),
-            app_key=os.getenv("OVH_APPLICATION_KEY"),
-            app_secret=os.getenv("OVH_APPLICATION_SECRET"),
+            # Accept both the canonical names and the shorter aliases the live
+            # .env uses (OVH_APP_KEY / OVH_APP_SECRET).
+            app_key=os.getenv("OVH_APPLICATION_KEY") or os.getenv("OVH_APP_KEY"),
+            app_secret=os.getenv("OVH_APPLICATION_SECRET")
+            or os.getenv("OVH_APP_SECRET"),
             consumer_key=os.getenv("OVH_CONSUMER_KEY"),
             project_id=os.getenv("OVH_PROJECT_ID"),
             kube_id=os.getenv("OVH_KUBE_ID"),

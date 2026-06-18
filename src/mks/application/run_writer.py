@@ -49,9 +49,14 @@ def create_run(
     *,
     inputs: dict[str, Any],
     reports_root: str = "reports",
+    run_id: str | None = None,
 ) -> RunContext:
-    """Create run directory context."""
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    """Create run directory context.
+
+    ``run_id`` defaults to a ``YYYYMMDD_HHMMSS`` timestamp; pass an explicit
+    value (e.g. a date) to control the run directory name.
+    """
+    run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(reports_root) / capability / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     return RunContext(

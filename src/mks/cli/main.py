@@ -7,6 +7,9 @@ import typer
 from rich.console import Console
 
 from mks.application import (
+    BillingExportParams,
+    execute_billing_export,
+    execute_cluster_inventory,
     execute_dashboard_summary,
     execute_deletion_investigation,
     execute_pod_density_summary,
@@ -14,7 +17,11 @@ from mks.application import (
     execute_rancher_users_export,
     execute_rbac_audit,
     execute_resource_audit,
+    execute_rightsizing,
+    execute_spend_forecast,
+    execute_upgrade_readiness,
     execute_usage_efficiency_audit,
+    execute_waste_scan,
     execute_workload_efficiency_audit,
 )
 
@@ -312,6 +319,198 @@ def investigate_command(
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
             console.print(f"[green]Manifest:[/green] {run.manifest_path}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("billing-export")
+def billing_command(
+    date_from: str = typer.Option(
+        "2025-01",
+        "--from",
+        help="Start month inclusive, YYYY-MM.",
+    ),
+    date_to: str | None = typer.Option(
+        None,
+        "--to",
+        help="End month inclusive, YYYY-MM (default: current month).",
+    ),
+    month_offset: int = typer.Option(
+        -1,
+        "--month-offset",
+        help=(
+            "Shift the labelled month by N months. A bill is issued ~1 month "
+            "after consumption; default -1 labels rows by consumption month "
+            "to match the sheet. Pass 0 to label by issue month."
+        ),
+    ),
+    project_id: str | None = typer.Option(
+        None,
+        "--project-id",
+        help="OVH cloud project id (billing domain). Defaults to config/known id.",
+    ),
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+) -> None:
+    """Rebuild the [OVH MKS] Payment CSV from the OVH billing API.
+
+    Requires OVH credentials and the `ovh` extra. Prints a rich preview by
+    default; use `--report/-r` to persist the CSV.
+    """
+    try:
+        params = BillingExportParams(
+            date_from=date_from,
+            date_to=date_to,
+            month_offset=month_offset,
+            project_id=project_id,
+        )
+        run = execute_billing_export(params, reports_root=report)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("cluster-inventory")
+def cluster_inventory_command(
+    kube_id: str | None = typer.Option(
+        None,
+        "--kube-id",
+        help="OVH MKS cluster id. Defaults to OVH_KUBE_ID or the sole cluster.",
+    ),
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+) -> None:
+    """Snapshot MKS control-plane state: cluster, node pools, nodes.
+
+    Requires OVH credentials and the `ovh` extra. Prints a rich preview by
+    default; use `--report/-r` to persist the CSVs.
+    """
+    try:
+        run = execute_cluster_inventory(reports_root=report, kube_id=kube_id)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("spend-forecast")
+def spend_forecast_command(
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+) -> None:
+    """Report current-month and projected end-of-month OVH spend.
+
+    Requires OVH credentials and the `ovh` extra.
+    """
+    try:
+        run = execute_spend_forecast(reports_root=report)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("waste-scan")
+def waste_scan_command(
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+) -> None:
+    """Scan the project for orphan volumes and unassociated floating IPs.
+
+    Requires OVH credentials and the `ovh` extra.
+    """
+    try:
+        run = execute_waste_scan(reports_root=report)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("rightsizing")
+def rightsizing_command(
+    kube_id: str | None = typer.Option(
+        None,
+        "--kube-id",
+        help="OVH MKS cluster id. Defaults to OVH_KUBE_ID or the sole cluster.",
+    ),
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+) -> None:
+    """Report node-pool cost vs utilization with rightsizing hints.
+
+    Cost from `config/ovh_prices.toml`; utilization from metrics-server (optional).
+    Requires OVH credentials and the `ovh` extra.
+    """
+    try:
+        run = execute_rightsizing(reports_root=report, kube_id=kube_id)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("upgrade-readiness")
+def upgrade_readiness_command(
+    kube_id: str | None = typer.Option(
+        None,
+        "--kube-id",
+        help="OVH MKS cluster id. Defaults to OVH_KUBE_ID or the sole cluster.",
+    ),
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+) -> None:
+    """Report how far the MKS cluster lags behind available k8s releases.
+
+    Requires OVH credentials and the `ovh` extra.
+    """
+    try:
+        run = execute_upgrade_readiness(reports_root=report, kube_id=kube_id)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
     except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 
