@@ -1,17 +1,23 @@
 # %%
 # @title Imports
 import os
+from contextlib import suppress
+from datetime import datetime
 
+import gspread
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import yaml
+from google.auth import default
+from gspread_dataframe import set_with_dataframe
 from IPython.display import display
 from kubernetes import client, config
 
 try:
-    from google.colab import userdata
+    from google.colab import auth, userdata
 except ImportError:
+    auth = None
     userdata = None
 
 
@@ -100,6 +106,8 @@ SYSTEM_NAMESPACE_PREFIXES = ("cattle-",)
 COLORS = px.colors.qualitative.Vivid
 COLOR_USED = COLORS[2]
 COLOR_WASTED = COLORS[9]
+SPREADSHEET_ID = "13JavgeYNFHSKqmtIyBDZvOBpWCgiwOevW9MFNp_OzsE"
+WORKSHEET_DATE_FORMAT = "%Y-%m-%d"
 
 RESOURCE_COLUMNS = [
     "namespace",
@@ -891,6 +899,75 @@ def build_namespace_contributors_table(namespaces_df, usage_df, top_n=15):
     return display_df
 
 
+def build_top_waste_namespaces_export_df(namespaces_df, usage_df, top_n=15):
+    contributors_df = build_namespace_contributors_table(
+        namespaces_df,
+        usage_df,
+        top_n=top_n,
+    )
+    if contributors_df.empty:
+        return contributors_df
+
+    export_df = contributors_df.rename(
+        columns={
+            "Namespace": "namespace",
+            "Pods": "pod_count",
+            "CPU Wasted (m)": "cpu_request_waste_m",
+            "CPU Waste Share %": "cpu_waste_share_pct",
+            "CPU Efficiency %": "cpu_efficiency_pct",
+            "Mem Wasted (Mi)": "memory_request_waste_mb",
+            "Mem Waste Share %": "memory_waste_share_pct",
+            "Mem Efficiency %": "memory_efficiency_pct",
+            "Critical": "critical_issues",
+            "High": "high_issues",
+            "Medium": "medium_issues",
+        }
+    ).copy()
+    export_df.insert(
+        0,
+        "snapshot_date",
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    return export_df
+
+
+def build_snapshot_worksheet_name(df, date_format=WORKSHEET_DATE_FORMAT):
+    if df.empty or "snapshot_date" not in df.columns:
+        return datetime.now().strftime(date_format)
+
+    snapshot_value = str(df["snapshot_date"].iloc[0])
+    return pd.to_datetime(snapshot_value).strftime(date_format)
+
+
+def get_google_sheet(spreadsheet_id):
+    with suppress(AttributeError):
+        auth.authenticate_user()
+
+    creds, _ = default()
+    gc = gspread.authorize(creds)
+    return gc.open_by_key(spreadsheet_id)
+
+
+def write_df_to_worksheet(df, spreadsheet_id, worksheet_name):
+    if df.empty:
+        print(f"Skipped {worksheet_name}: DataFrame is empty.")
+        return
+
+    spreadsheet = get_google_sheet(spreadsheet_id)
+    try:
+        worksheet = spreadsheet.worksheet(worksheet_name)
+        worksheet.clear()
+    except Exception:
+        worksheet = spreadsheet.add_worksheet(
+            title=worksheet_name,
+            rows=max(len(df) + 10, 100),
+            cols=max(len(df.columns) + 10, 20),
+        )
+
+    set_with_dataframe(worksheet, df)
+    print(f"Wrote {len(df)} rows to {spreadsheet_id}/{worksheet_name}")
+
+
 # %%
 # @title CPU Waste by Namespace (Divergent)
 render_namespace_waste_chart(
@@ -937,3 +1014,21 @@ if contributors_df.empty:
     print("No namespace contributor data available.")
 else:
     display(contributors_df)
+
+# %%
+# @title Save Top Waste Namespaces
+top_waste_namespaces_df = build_top_waste_namespaces_export_df(
+    namespaces_df,
+    usage_df,
+    top_n=15,
+)
+if top_waste_namespaces_df.empty:
+    print("No top waste namespaces data available.")
+else:
+    display(top_waste_namespaces_df)
+    snapshot_worksheet = build_snapshot_worksheet_name(top_waste_namespaces_df)
+    write_df_to_worksheet(
+        top_waste_namespaces_df,
+        SPREADSHEET_ID,
+        snapshot_worksheet,
+    )
