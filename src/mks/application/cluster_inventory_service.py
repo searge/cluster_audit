@@ -5,18 +5,17 @@ control-plane version and region, node-pool billing mode (monthly forfait vs
 hourly) and autoscaling bounds. This capability snapshots that.
 """
 
-import csv
 from pathlib import Path
 
-from mks.application._ovh_session import ovh_session, resolve_kube_id
-from mks.application._step_report import banner, info, ok, warn
-from mks.config import OvhConfig
-from mks.infrastructure.ovh_client import (
-    DEFAULT_MKS_PROJECT_ID,
-    KubeCluster,
-    KubeNode,
-    NodePool,
+from mks.application._ovh_session import (
+    ovh_session,
+    require_project_id,
+    resolve_kube_id,
 )
+from mks.application._step_report import banner, info, ok, warn
+from mks.application.use_case_utils import write_csv
+from mks.config import OvhConfig
+from mks.infrastructure.ovh_client import KubeCluster, KubeNode, NodePool
 
 
 def _report_cluster(cluster: KubeCluster) -> None:
@@ -32,86 +31,74 @@ def _report_cluster(cluster: KubeCluster) -> None:
 
 
 def _write_cluster_csv(data_dir: str, cluster: KubeCluster) -> Path:
-    out_path = Path(data_dir) / "cluster.csv"
-    with out_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "id",
-                "name",
-                "region",
-                "version",
-                "status",
-                "plan",
-                "isUpToDate",
-                "controlPlaneUpToDate",
-                "nextUpgrades",
-            ]
-        )
-        writer.writerow(
-            [
-                cluster.id,
-                cluster.name,
-                cluster.region,
-                cluster.version,
-                cluster.status,
-                cluster.plan,
-                cluster.is_up_to_date,
-                cluster.control_plane_is_up_to_date,
-                " ".join(cluster.next_upgrade_versions),
-            ]
-        )
-    return out_path
+    header = [
+        "id",
+        "name",
+        "region",
+        "version",
+        "status",
+        "plan",
+        "isUpToDate",
+        "controlPlaneUpToDate",
+        "nextUpgrades",
+    ]
+    row = [
+        cluster.id,
+        cluster.name,
+        cluster.region,
+        cluster.version,
+        cluster.status,
+        cluster.plan,
+        cluster.is_up_to_date,
+        cluster.control_plane_is_up_to_date,
+        " ".join(cluster.next_upgrade_versions),
+    ]
+    return write_csv(Path(data_dir) / "cluster.csv", header, [row])
 
 
 def _write_nodepools_csv(data_dir: str, pools: list[NodePool]) -> Path:
-    out_path = Path(data_dir) / "nodepools.csv"
-    with out_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                "name",
-                "flavor",
-                "billing",
-                "autoscale",
-                "minNodes",
-                "maxNodes",
-                "desiredNodes",
-                "currentNodes",
-                "availableNodes",
-                "upToDateNodes",
-                "status",
-            ]
-        )
-        for pool in pools:
-            writer.writerow(
-                [
-                    pool.name,
-                    pool.flavor,
-                    "monthly" if pool.monthly_billed else "hourly",
-                    pool.autoscale,
-                    pool.min_nodes,
-                    pool.max_nodes,
-                    pool.desired_nodes,
-                    pool.current_nodes,
-                    pool.available_nodes,
-                    pool.up_to_date_nodes,
-                    pool.status,
-                ]
-            )
-    return out_path
+    header = [
+        "name",
+        "flavor",
+        "billing",
+        "autoscale",
+        "minNodes",
+        "maxNodes",
+        "desiredNodes",
+        "currentNodes",
+        "availableNodes",
+        "upToDateNodes",
+        "status",
+    ]
+    rows = [
+        [
+            pool.name,
+            pool.flavor,
+            "monthly" if pool.monthly_billed else "hourly",
+            pool.autoscale,
+            pool.min_nodes,
+            pool.max_nodes,
+            pool.desired_nodes,
+            pool.current_nodes,
+            pool.available_nodes,
+            pool.up_to_date_nodes,
+            pool.status,
+        ]
+        for pool in pools
+    ]
+    return write_csv(Path(data_dir) / "nodepools.csv", header, rows)
 
 
 def _write_nodes_csv(data_dir: str, nodes: list[KubeNode]) -> Path:
-    out_path = Path(data_dir) / "nodes.csv"
-    with out_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["name", "flavor", "status", "version", "isUpToDate"])
-        for node in sorted(nodes, key=lambda n: n.name):
-            writer.writerow(
-                [node.name, node.flavor, node.status, node.version, node.is_up_to_date]
-            )
-    return out_path
+    rows = [
+        [node.name, node.flavor, node.status, node.version, node.is_up_to_date]
+        for node in sorted(nodes, key=lambda n: n.name)
+    ]
+    return write_csv(
+        Path(data_dir) / "nodes.csv",
+        ["name", "flavor", "status", "version", "isUpToDate"],
+        rows,
+    )
 
 
 def _print_summary(pools: list[NodePool], nodes: list[KubeNode]) -> None:
@@ -142,7 +129,7 @@ def execute_cluster_inventory(
     Returns the node-pools CSV path. Raises ``OvhApiError`` on API/auth failure
     and ``RuntimeError`` when no cluster is found.
     """
-    project_id = ovh_config.project_id or DEFAULT_MKS_PROJECT_ID
+    project_id = require_project_id(ovh_config)
     # MKS state is mutable (nodes scale), so no disk cache here.
     with ovh_session(ovh_config) as client:
         target_kube = resolve_kube_id(client, project_id, kube_id)

@@ -13,6 +13,7 @@ from mks.application import (
     execute_dashboard_summary,
     execute_deletion_investigation,
     execute_pod_density_summary,
+    execute_prices_refresh,
     execute_rancher_project_overview,
     execute_rancher_users_export,
     execute_rbac_audit,
@@ -482,6 +483,19 @@ def rightsizing_command(
         run = execute_rightsizing(reports_root=report, kube_id=kube_id)
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("prices-refresh")
+def prices_refresh_command() -> None:
+    """Show live OVH catalog prices vs `config/ovh_prices.toml` (read-only).
+
+    Prints a ready-to-paste TOML block; does not write the file. Requires OVH
+    credentials and the `ovh` extra.
+    """
+    try:
+        execute_prices_refresh()
     except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 

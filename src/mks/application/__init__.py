@@ -8,6 +8,7 @@ from mks.application.deletion_investigation_use_case import (
     execute_deletion_investigation,
 )
 from mks.application.pod_density_summary_use_case import execute_pod_density_summary
+from mks.application.prices_refresh_use_case import execute_prices_refresh
 from mks.application.rancher_project_overview_use_case import (
     execute_rancher_project_overview,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "execute_dashboard_summary",
     "execute_deletion_investigation",
     "execute_pod_density_summary",
+    "execute_prices_refresh",
     "execute_rancher_project_overview",
     "execute_rancher_users_export",
     "execute_rancher_users_export_async",

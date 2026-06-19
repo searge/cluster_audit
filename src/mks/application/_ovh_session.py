@@ -23,6 +23,16 @@ def ovh_session(ovh_config: OvhConfig) -> Generator[OvhClient]:
         yield client
 
 
+def require_project_id(ovh_config: OvhConfig, override: str | None = None) -> str:
+    """Return the OVH project id from override or config, or raise if unset."""
+    project_id = override or ovh_config.project_id
+    if not project_id:
+        raise ValueError(
+            "OVH project id not set; set OVH_PROJECT_ID in .env or pass --project-id"
+        )
+    return project_id
+
+
 def resolve_kube_id(client: OvhClient, project_id: str, kube_id: str | None) -> str:
     """Resolve the target cluster id, defaulting to the project's sole cluster."""
     if kube_id:
@@ -38,4 +48,4 @@ def resolve_kube_id(client: OvhClient, project_id: str, kube_id: str | None) -> 
     return kube_ids[0]
 
 
-__all__ = ["ovh_session", "resolve_kube_id"]
+__all__ = ["ovh_session", "require_project_id", "resolve_kube_id"]

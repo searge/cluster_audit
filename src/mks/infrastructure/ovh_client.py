@@ -16,17 +16,21 @@ cannot see: cluster version/region, node-pool billing mode and autoscaling.
 """
 
 import importlib
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, NamedTuple, Self
 
-from mks.config import OvhConfig
+from mks.config import FlavorPrice, OvhConfig, Prices
+
+# Catalog addon plan codes like "b2-15.monthly.postpaid" / "b2-15.consumption".
+_PLAN_CODE_RE = re.compile(
+    r"^([a-z]\d+-\d+(?:-flex)?)\.(monthly\.postpaid|consumption)$"
+)
+_UCENTS_PER_EUR = 1e8
 
 DEFAULT_MAX_WORKERS = 8
-
-# Known MKS project id; overridden by OvhConfig.project_id.
-DEFAULT_MKS_PROJECT_ID = "2a7f293154554621aed100e791b0a98c"
 
 
 class OvhApiError(RuntimeError):
@@ -125,6 +129,14 @@ class FloatingIp(NamedTuple):
     region: str
     status: str
     associated: bool
+
+
+class FlavorSpec(NamedTuple):
+    """Flavor hardware shape (``GET /cloud/project/{id}/flavor``)."""
+
+    name: str
+    vcpus: int
+    ram_gb: int
 
 
 class OvhClient:
@@ -366,6 +378,55 @@ class OvhClient:
             for item in raw
         ]
 
+    def list_flavors(self, project_id: str, region: str) -> list[FlavorSpec]:
+        """Return Linux flavor shapes available in a region."""
+        raw = self._get(f"/cloud/project/{project_id}/flavor", region=region)
+        return [
+            FlavorSpec(
+                name=str(item["name"]),
+                vcpus=int(item.get("vcpus", 0)),
+                ram_gb=int(item.get("ram", 0)),
+            )
+            for item in raw
+            if item.get("osType") == "linux"
+        ]
+
+    def get_catalog_prices(self, subsidiary: str = "FR") -> Prices:
+        """Fetch live flavor + high-speed-volume prices from the public catalog."""
+        cat = self._get("/order/catalog/public/cloud", ovhSubsidiary=subsidiary)
+        monthly: dict[str, float] = {}
+        hourly: dict[str, float] = {}
+        volume = 0.0
+        for addon in cat.get("addons") or []:
+            code = str(addon.get("planCode", ""))
+            price = self._first_price(addon)
+            if price is None:
+                continue
+            if code == "volume.high-speed.monthly.postpaid":
+                volume = price
+                continue
+            match = _PLAN_CODE_RE.match(code)
+            if not match:
+                continue
+            flavor, mode = match.group(1), match.group(2)
+            (monthly if mode == "monthly.postpaid" else hourly)[flavor] = price
+        flavors = {
+            name: FlavorPrice(
+                monthly_eur=monthly.get(name), hourly_eur=hourly.get(name)
+            )
+            for name in monthly.keys() | hourly.keys()
+        }
+        return Prices(flavors=flavors, volume_high_speed_eur_per_gb_month=volume)
+
+    @staticmethod
+    def _first_price(addon: dict[str, Any]) -> float | None:
+        """Return the first listed price of a catalog addon, in EUR."""
+        for pricing in addon.get("pricings") or []:
+            raw = pricing.get("price")
+            if raw is not None:
+                return float(raw) / _UCENTS_PER_EUR
+        return None
+
     def list_floating_ips(self, project_id: str, region: str) -> list[FloatingIp]:
         """Return floating IPs in a region."""
         raw = self._get(f"/cloud/project/{project_id}/region/{region}/floatingip")
@@ -382,8 +443,8 @@ class OvhClient:
 
 
 __all__ = [
-    "DEFAULT_MKS_PROJECT_ID",
     "BillLine",
+    "FlavorSpec",
     "FloatingIp",
     "KubeCluster",
     "KubeNode",

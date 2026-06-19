@@ -3,10 +3,14 @@
 import csv
 from pathlib import Path
 
-from mks.application._ovh_session import ovh_session, resolve_kube_id
+from mks.application._ovh_session import (
+    ovh_session,
+    require_project_id,
+    resolve_kube_id,
+)
 from mks.application._step_report import banner, info, ok, warn
 from mks.config import OvhConfig
-from mks.infrastructure.ovh_client import DEFAULT_MKS_PROJECT_ID, KubeCluster
+from mks.infrastructure.ovh_client import KubeCluster
 
 
 def _write_csv(data_dir: str, cluster: KubeCluster) -> Path:
@@ -35,7 +39,7 @@ def execute_upgrade_readiness(
     kube_id: str | None = None,
 ) -> str:
     """Report cluster version lag and available upgrades. Returns the CSV path."""
-    project_id = ovh_config.project_id or DEFAULT_MKS_PROJECT_ID
+    project_id = require_project_id(ovh_config)
     with ovh_session(ovh_config) as client:
         target_kube = resolve_kube_id(client, project_id, kube_id)
         banner(2, "Check cluster version")

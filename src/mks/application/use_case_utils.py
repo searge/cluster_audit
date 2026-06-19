@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import csv
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,6 +23,15 @@ from mks.application.run_writer import (
 )
 from mks.application.stdout_renderer import render_stdout_report
 from mks.config import load_config
+
+
+def write_csv(path: Path, header: Sequence[Any], rows: Iterable[Sequence[Any]]) -> Path:
+    """Write a UTF-8 CSV with a header row, returning the path."""
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(header)
+        writer.writerows(rows)
+    return path
 
 
 def render_stdout_with_tempdir(

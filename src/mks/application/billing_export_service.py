@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from mks.application._ovh_session import require_project_id
 from mks.application._step_report import banner as _banner
 from mks.application._step_report import info as _info
 from mks.application._step_report import ok as _ok
@@ -22,7 +23,6 @@ from mks.application._step_report import warn as _warn
 from mks.config import OvhConfig
 from mks.domain.billing import COLUMNS, classify, month_floor_iso, shift_month
 from mks.infrastructure.ovh_client import (
-    DEFAULT_MKS_PROJECT_ID,
     OvhApiError,
     OvhClient,
 )
@@ -98,9 +98,7 @@ def _resolve_project(
 ) -> str:
     """Resolve and verify the MKS billing project id (STEP 2)."""
     _banner(2, "Resolve MKS project id (billing domain)")
-    target_project = (
-        params.project_id or ovh_config.project_id or DEFAULT_MKS_PROJECT_ID
-    )
+    target_project = require_project_id(ovh_config, params.project_id)
     try:
         projects = client.list_projects()
     except OvhApiError as exc:

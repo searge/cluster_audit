@@ -7,13 +7,10 @@ month: spend so far and OVH's projected end-of-month total.
 import csv
 from pathlib import Path
 
-from mks.application._ovh_session import ovh_session
+from mks.application._ovh_session import ovh_session, require_project_id
 from mks.application._step_report import banner, info, ok
 from mks.config import OvhConfig
-from mks.infrastructure.ovh_client import (
-    DEFAULT_MKS_PROJECT_ID,
-    UsageSnapshot,
-)
+from mks.infrastructure.ovh_client import UsageSnapshot
 
 
 def _write_csv(data_dir: str, current: UsageSnapshot, forecast: UsageSnapshot) -> Path:
@@ -33,7 +30,7 @@ def execute_spend_forecast(*, data_dir: str, ovh_config: OvhConfig) -> str:
 
     Returns the CSV path. Raises ``OvhApiError`` on API/auth failure.
     """
-    project_id = ovh_config.project_id or DEFAULT_MKS_PROJECT_ID
+    project_id = require_project_id(ovh_config)
     # Usage is live data, so no disk cache here.
     with ovh_session(ovh_config) as client:
         banner(2, "Fetch current-month and forecast usage")
