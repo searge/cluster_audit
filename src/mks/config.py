@@ -43,6 +43,7 @@ class AuditConfig:
     """Top-level config controlling enabled backends."""
 
     kubeconfig: Path | None = None
+    prometheus_url: str | None = None
     ovh: OvhConfig = field(default_factory=OvhConfig)
     rancher: RancherConfig = field(default_factory=RancherConfig)
     audit_logs: AuditLogConfig = field(default_factory=AuditLogConfig)
@@ -166,6 +167,7 @@ def load_config(env_path: Path = Path(".env")) -> AuditConfig:
     kubeconfig_raw = os.getenv("KUBECONFIG")
     return AuditConfig(
         kubeconfig=Path(kubeconfig_raw) if kubeconfig_raw else None,
+        prometheus_url=os.getenv("PROMETHEUS_URL"),
         ovh=OvhConfig(
             endpoint=os.getenv("OVH_ENDPOINT"),
             # Accept both the canonical names and the shorter aliases the live

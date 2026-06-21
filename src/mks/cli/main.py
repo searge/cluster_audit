@@ -9,6 +9,7 @@ from rich.console import Console
 from mks.application import (
     BillingExportParams,
     execute_billing_export,
+    execute_capacity_plan,
     execute_cluster_inventory,
     execute_dashboard_summary,
     execute_deletion_investigation,
@@ -523,6 +524,51 @@ def upgrade_readiness_command(
     """
     try:
         run = execute_upgrade_readiness(reports_root=report, kube_id=kube_id)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("capacity-plan")
+def capacity_plan_command(
+    prom_url: str | None = typer.Option(
+        None,
+        "--prom-url",
+        help="Prometheus base URL. Defaults to PROMETHEUS_URL; unset prints PromQL.",
+    ),
+    window: str = typer.Option(
+        "14d",
+        "--window",
+        help="Look-back window for peak usage (PromQL range, e.g. 7d, 14d).",
+    ),
+    insecure: bool = typer.Option(
+        False,
+        "--insecure",
+        help="Skip TLS verification (self-signed Prometheus ingress).",
+    ),
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+) -> None:
+    """Per-namespace requests vs peak usage (Prometheus) for node sizing.
+
+    Set `PROMETHEUS_URL` or pass `--prom-url`; without it, prints the PromQL to
+    run by hand. Needs metrics from rancher-monitoring.
+    """
+    try:
+        run = execute_capacity_plan(
+            reports_root=report,
+            prometheus_url=prom_url,
+            window=window,
+            verify_tls=not insecure,
+        )
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
     except (ValueError, RuntimeError) as exc:  # pragma: no cover

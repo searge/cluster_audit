@@ -2,6 +2,7 @@
 
 from mks.application.billing_export_service import BillingExportParams
 from mks.application.billing_export_use_case import execute_billing_export
+from mks.application.capacity_plan_use_case import execute_capacity_plan
 from mks.application.cluster_inventory_use_case import execute_cluster_inventory
 from mks.application.dashboard_summary_use_case import execute_dashboard_summary
 from mks.application.deletion_investigation_use_case import (
@@ -31,6 +32,7 @@ from mks.application.workload_efficiency_use_case import (
 __all__ = [
     "BillingExportParams",
     "execute_billing_export",
+    "execute_capacity_plan",
     "execute_cluster_inventory",
     "execute_dashboard_summary",
     "execute_deletion_investigation",
