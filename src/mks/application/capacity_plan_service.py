@@ -138,7 +138,7 @@ def execute_capacity_plan(
 ) -> str:
     """Query Prometheus for demand vs requests and write CSVs. Returns the path."""
     banner(1, "Connect to Prometheus")
-    client = PrometheusClient(prometheus_url, verify_tls=verify_tls)
+    client = PrometheusClient(prometheus_url, verify_tls=verify_tls, timeout_seconds=120.0)
     queries = build_queries(window)
     if client.scalar("vector(1)") is None:
         warn("Prometheus reachable but returned no data for a trivial query")
