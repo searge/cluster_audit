@@ -359,7 +359,7 @@ def write_csv(rows: list[dict[str, Any]], data_dir: Path) -> Path:
     return out_file
 
 
-async def _collect_projects_and_users(
+async def collect_projects_and_users(
     projects: dict[str, dict[str, Any]],
     *,
     rancher_cfg: tuple[str, str | None, str | None, str | None],
@@ -414,7 +414,7 @@ async def execute_rancher_users_export_async(
     warn_missing_namespaces(namespaces, ns_infos)
     projects = build_project_mapping(ns_infos)
 
-    user_map = await _collect_projects_and_users(
+    user_map = await collect_projects_and_users(
         projects,
         rancher_cfg=(rancher_url, rancher_token, rancher_ak, rancher_sk),
         cache_dir=cache_dir,

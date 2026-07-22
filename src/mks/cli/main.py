@@ -13,6 +13,7 @@ from mks.application import (
     execute_cluster_inventory,
     execute_dashboard_summary,
     execute_deletion_investigation,
+    execute_hygiene_report,
     execute_pod_density_summary,
     execute_prices_refresh,
     execute_rancher_project_overview,
@@ -23,6 +24,7 @@ from mks.application import (
     execute_spend_forecast,
     execute_upgrade_readiness,
     execute_usage_efficiency_audit,
+    execute_volume_reconcile,
     execute_waste_scan,
     execute_workload_efficiency_audit,
 )
@@ -452,6 +454,61 @@ def waste_scan_command(
     """
     try:
         run = execute_waste_scan(reports_root=report)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("hygiene-report")
+def hygiene_report_command(
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+    policy: str | None = typer.Option(
+        None,
+        "--policy",
+        help="Only include failed results from this Kyverno policy.",
+    ),
+) -> None:
+    """Join failed policy results with Rancher namespace owners.
+
+    Emits hygiene_report.jsonl - the contract consumed by notification
+    tooling. Requires kubectl access and Rancher credentials.
+    """
+    try:
+        run = execute_hygiene_report(reports_root=report, policy=policy)
+        if run is not None:
+            console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("volume-reconcile")
+def volume_reconcile_command(
+    report: str | None = typer.Option(
+        None,
+        "--report",
+        "-r",
+        help=(
+            "Persist report files under this directory. "
+            "If omitted, prints stdout preview only."
+        ),
+    ),
+) -> None:
+    """Classify detached volumes into deletion-safety waves via PV join.
+
+    Requires OVH credentials, the `ovh` extra and a kubeconfig pointing at
+    the MKS cluster. Deletion itself stays manual.
+    """
+    try:
+        run = execute_volume_reconcile(reports_root=report)
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
     except (ValueError, RuntimeError) as exc:  # pragma: no cover

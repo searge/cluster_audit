@@ -8,6 +8,7 @@ from mks.application.dashboard_summary_use_case import execute_dashboard_summary
 from mks.application.deletion_investigation_use_case import (
     execute_deletion_investigation,
 )
+from mks.application.hygiene_report_use_case import execute_hygiene_report
 from mks.application.pod_density_summary_use_case import execute_pod_density_summary
 from mks.application.prices_refresh_use_case import execute_prices_refresh
 from mks.application.rancher_project_overview_use_case import (
@@ -24,6 +25,7 @@ from mks.application.run_writer import RunResult
 from mks.application.spend_forecast_use_case import execute_spend_forecast
 from mks.application.upgrade_readiness_use_case import execute_upgrade_readiness
 from mks.application.usage_efficiency_use_case import execute_usage_efficiency_audit
+from mks.application.volume_reconcile_use_case import execute_volume_reconcile
 from mks.application.waste_scan_use_case import execute_waste_scan
 from mks.application.workload_efficiency_use_case import (
     execute_workload_efficiency_audit,
@@ -47,6 +49,8 @@ __all__ = [
     "execute_spend_forecast",
     "execute_upgrade_readiness",
     "execute_usage_efficiency_audit",
+    "execute_hygiene_report",
+    "execute_volume_reconcile",
     "execute_waste_scan",
     "execute_workload_efficiency_audit",
     "RunResult",
