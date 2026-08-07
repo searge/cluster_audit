@@ -1,0 +1,611 @@
+{
+  "uid": "mks-capacity",
+  "title": "OVH MKS — capacity",
+  "description": "Reserved (resources.requests) vs actually used. The scheduler counts the reservation, not the usage — reserved-but-unused capacity buys nodes even on an idle cluster. CI namespaces burst by design; kube-system is platform overhead. Weekly samples: CPU p95, memory peak.",
+  "tags": [
+    "mks",
+    "capacity"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "",
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Nodes",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT nodes FROM cluster_trend ORDER BY taken_at DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "CPU reserved but never used (cores)",
+      "description": "cpu_req - cpu_p95 at the latest snapshot. This is what a right-sizing pass would return to the cluster.",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#E02F44"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT cpu_phantom_cores FROM cluster_trend ORDER BY taken_at DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Memory used beyond requests (GiB)",
+      "description": "peak minus requested. Positive means workloads run on memory nobody reserved — the MemoryPressure/eviction axis, not the cost axis.",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT mem_max_gb - mem_req_gb AS shortfall FROM cluster_trend ORDER BY taken_at DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Cluster CPU — reserved vs actually used (cores)",
+      "description": "The gap between the two lines is the phantom reservation that drives node count.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1,
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "showPoints": "always",
+            "pointSize": 8,
+            "fillOpacity": 0,
+            "spanNulls": true,
+            "axisLabel": "cores"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_req_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Reserved (requests)"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#C97A1A"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_p95_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Actually used (p95)"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#4A8FE7"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT taken_at AS time, cpu_req_cores, cpu_p95_cores FROM cluster_trend WHERE $__timeFilter(taken_at) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Cluster memory — requested vs peak (GiB)",
+      "description": "Separate panel on purpose: cores and gibibytes never share an axis.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1,
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "showPoints": "always",
+            "pointSize": 8,
+            "fillOpacity": 0,
+            "spanNulls": true,
+            "axisLabel": "GiB"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_req_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Reserved (requests)"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#C97A1A"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_max_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Actually used (peak)"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#4A8FE7"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT taken_at AS time, mem_req_gb, mem_max_gb FROM cluster_trend WHERE $__timeFilter(taken_at) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Namespaces by reserved-but-unused CPU (latest snapshot)",
+      "description": "CI namespaces are bursty by nature — read gitlab-runners with that in mind rather than as waste.",
+      "gridPos": {
+        "h": 11,
+        "w": 15,
+        "x": 0,
+        "y": 13
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "namespace"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 230
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_req_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Reserved"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_p95_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Used (p95)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_phantom_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Reserved but unused"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-reds"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_shortfall_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Mem peak − reserved (GiB)"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Reserved but unused",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT namespace, cpu_req_cores, cpu_p95_cores, cpu_phantom_cores, mem_shortfall_gb FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) ORDER BY cpu_phantom_cores DESC LIMIT 25"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Running with no CPU request",
+      "description": "These namespaces consume CPU while reserving none, so the scheduler treats them as free and packs nodes past capacity. Same failure class as the unlimited Elasticsearch pods behind the MemoryPressure/CSI incidents. A LimitRange defaultRequest backfills exactly this.",
+      "gridPos": {
+        "h": 11,
+        "w": 9,
+        "x": 15,
+        "y": 13
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "namespace"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 230
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_p95_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "CPU used (p95)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_max_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Mem peak (GiB)"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "CPU used (p95)",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT namespace, cpu_p95_cores, mem_max_gb FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) AND cpu_req_cores < 0.05 AND cpu_p95_cores > 0.1 ORDER BY cpu_p95_cores DESC LIMIT 15"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+---
+# Grafana reads the trend store directly. There is no API layer by design:
+# consumption data is not confidential internally, so a dashboard over a
+# read-only view is the whole front end.
+apiVersion: 1
+
+datasources:
+  - name: capacity
+    uid: capacity-pg
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: postgres
+    isDefault: true
+    jsonData:
+      database: ${POSTGRES_DB}
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}

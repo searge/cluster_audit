@@ -20,14 +20,32 @@ _C = '{container!="",container!="POD"}'
 def build_queries(window: str) -> dict[str, str]:
     """Return the PromQL used, keyed by purpose (also handy for manual runs).
 
-    The ``*_p95`` queries use a PromQL subquery: ``<instant-expr>[window:step]``
-    turns the inner aggregation into a range vector that ``quantile_over_time``
-    then reduces. The ``[5m]`` inside ``rate`` is the rate window; the
-    ``[window:5m]`` after the ``sum`` is the subquery range — both are intended.
+    Every query is windowed, requests included. An instant reading of
+    ``kube_pod_container_resource_requests`` only sees pods that exist right
+    now, so a namespace whose CI jobs had finished reported *zero* requested
+    CPU while still carrying a week of measured usage — producing impossible
+    negative waste (``gitlab-runners`` read 0.00 requested vs 16.65 used) and
+    making the cluster total swing by tens of cores between two runs minutes
+    apart. Windowing both sides fixes that.
+
+    The statistic is matched per resource, deliberately. CPU compares p95 to
+    p95: pairing peak reservation against typical usage would inflate the gap
+    and invites the fair objection that it measures our worst moment against
+    their average one. Memory compares peak to peak, because memory has to fit
+    at its maximum or the pod is OOM-killed — an average would understate it.
+
+    The subquery form is ``<instant-expr>[window:step]`` — it turns an
+    aggregation into a range vector that ``max_over_time`` /
+    ``quantile_over_time`` then reduce. In the CPU usage queries the ``[5m]``
+    inside ``rate`` is the rate window and the ``[window:5m]`` after the ``sum``
+    is the subquery range; both are intended. Memory steps at 30m because
+    working-set moves slower and the finer step buys nothing but query time.
     """
     req = "sum by (namespace) (kube_pod_container_resource_requests"
     return {
-        "cpu_req_by_ns": f'{req}{{resource="cpu"}})',
+        "cpu_req_by_ns": (
+            f'quantile_over_time(0.95, {req}{{resource="cpu"}})[{window}:5m])'
+        ),
         "cpu_p95_by_ns": (
             f"quantile_over_time(0.95, sum by (namespace) "
             f"(rate(container_cpu_usage_seconds_total{_C}[5m]))[{window}:5m])"
@@ -36,17 +54,23 @@ def build_queries(window: str) -> dict[str, str]:
             f"max_over_time(sum by (namespace) "
             f"(rate(container_cpu_usage_seconds_total{_C}[5m]))[{window}:5m])"
         ),
-        "mem_req_by_ns": f'{req}{{resource="memory"}})',
+        "mem_req_by_ns": (f'max_over_time({req}{{resource="memory"}})[{window}:30m])'),
         "mem_max_by_ns": (
             f"max_over_time(sum by (namespace) "
             f"(container_memory_working_set_bytes{_C})[{window}:30m])"
         ),
-        "cpu_req_total": 'sum(kube_pod_container_resource_requests{resource="cpu"})',
+        "cpu_req_total": (
+            f"quantile_over_time(0.95, sum(kube_pod_container_resource_requests"
+            f'{{resource="cpu"}})[{window}:5m])'
+        ),
         "cpu_p95_total": (
             f"quantile_over_time(0.95, sum"
             f"(rate(container_cpu_usage_seconds_total{_C}[5m]))[{window}:5m])"
         ),
-        "mem_req_total": 'sum(kube_pod_container_resource_requests{resource="memory"})',
+        "mem_req_total": (
+            f"max_over_time(sum(kube_pod_container_resource_requests"
+            f'{{resource="memory"}})[{window}:30m])'
+        ),
         "mem_max_total": (
             f"max_over_time(sum(container_memory_working_set_bytes{_C})[{window}:30m])"
         ),
