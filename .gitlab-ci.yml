@@ -1,0 +1,191 @@
+---
+# Mirrors the git-mm-bridge pipeline shape (Harbor + BuildKit rootless +
+# hadolint/trivy/dockle), adapted for a Python batch image. No deploy stage:
+# the CronJob that runs this image is deployed from the ovh-cluster GitOps repo.
+stages:
+  - test
+  - build
+  - scan
+
+default:
+  tags:
+    - galaxy-docker-shared
+
+########################################################################
+# Configuration
+########################################################################
+
+.smile-ca:
+  before_script:
+    - |
+      mkdir -p "${CI_PROJECT_DIR}/.certs"
+      cat /etc/ssl/certs/ca-certificates.crt "${SMILE_CA_PEM}" > "${CI_PROJECT_DIR}/.certs/ca-certificates.crt"
+      export SSL_CERT_FILE="${CI_PROJECT_DIR}/.certs/ca-certificates.crt"
+
+.dockerfile-changes: &dockerfile_changes
+  - .dockerignore
+  - Dockerfile
+
+.python-docker-changes: &python_docker_changes
+  - .dockerignore
+  - Dockerfile
+  - pyproject.toml
+  - uv.lock
+  - Taskfile.yaml
+  - src/**/*
+  - config/**/*
+
+variables:
+  HARBOR_REGISTRY: registry.galaxy.intranet
+  IMAGE_NAME: ${HARBOR_REGISTRY}/galaxy/mks-audit
+  CACHE_IMAGE: ${HARBOR_REGISTRY}/galaxy/mks-audit:buildcache
+  # DHI: `-dev` (shell + pip + root) builds, the plain tag runs. Both must be
+  # the same OS so the copied venv keeps pointing at a real interpreter.
+  PYTHON_BUILD_IMAGE: ${HARBOR_REGISTRY}/dhi/python:3.13-debian13-dev
+  PYTHON_RUNTIME_IMAGE: ${HARBOR_REGISTRY}/dhi/python:3.13-debian13
+  UV_VERSION: 0.9.6
+  TASK_VERSION: v3.50.0
+
+########################################################################
+# Python
+########################################################################
+
+test:gate:
+  stage: test
+  image: ${PYTHON_BUILD_IMAGE}
+  interruptible: true
+  variables:
+    UV_CACHE_DIR: ${CI_PROJECT_DIR}/.uv-cache
+  cache:
+    key:
+      files:
+        - uv.lock
+    paths:
+      - .uv-cache
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        paths: *python_docker_changes
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        paths: *python_docker_changes
+    - if: $CI_COMMIT_TAG
+    - when: never
+  before_script:
+    - !reference [.smile-ca, before_script]
+    - pip install --no-cache-dir "uv==${UV_VERSION}"
+    - sh -c "$(curl -sSL https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin "${TASK_VERSION}"
+  script:
+    # `ci`, not `test`: the CI gate must fail on unformatted code, not rewrite it.
+    - task ci -- src/
+
+########################################################################
+# Docker
+########################################################################
+
+test:hadolint:
+  stage: test
+  image: ${HARBOR_REGISTRY}/library/docker-scanner:latest
+  interruptible: true
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        paths: *dockerfile_changes
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        paths: *dockerfile_changes
+    - if: $CI_COMMIT_TAG
+    - when: never
+  script:
+    - hadolint Dockerfile
+
+test:trivy:config:
+  stage: test
+  image: ${HARBOR_REGISTRY}/library/docker-scanner:latest
+  interruptible: true
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        paths: *dockerfile_changes
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        paths: *dockerfile_changes
+    - if: $CI_COMMIT_TAG
+    - when: never
+  script:
+    - trivy config Dockerfile
+
+########################################################################
+# Image
+########################################################################
+
+build:image:
+  stage: build
+  tags: ["galaxy-buildx-rootless"]
+  image:
+    name: moby/buildkit:rootless
+    entrypoint: [""]
+  needs:
+    - job: test:gate
+    - job: test:hadolint
+      optional: true
+    - job: test:trivy:config
+      optional: true
+  variables:
+    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
+  before_script:
+    - !reference [.smile-ca, before_script]
+    - |
+      mkdir -p "${CI_PROJECT_DIR}/.buildkit"
+      cat > "${CI_PROJECT_DIR}/.buildkit/buildkitd.toml" <<EOF
+      [registry."${HARBOR_REGISTRY}"]
+        ca = ["${SMILE_CA_PEM}"]
+      EOF
+      export BUILDKITD_FLAGS="${BUILDKITD_FLAGS} --config ${CI_PROJECT_DIR}/.buildkit/buildkitd.toml"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        paths: *python_docker_changes
+    - if: $CI_COMMIT_TAG
+    - when: never
+  script:
+    - |
+      buildctl-daemonless.sh build \
+        --progress=plain \
+        --frontend dockerfile.v0 \
+        --local context="${CI_PROJECT_DIR}" \
+        --local dockerfile="${CI_PROJECT_DIR}" \
+        --opt filename=Dockerfile \
+        --opt build-arg:PYTHON_BUILD_IMAGE="${PYTHON_BUILD_IMAGE}" \
+        --opt build-arg:PYTHON_RUNTIME_IMAGE="${PYTHON_RUNTIME_IMAGE}" \
+        --opt build-arg:UV_VERSION="${UV_VERSION}" \
+        --opt build-arg:VERSION="${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}" \
+        --opt build-arg:COMMIT="${CI_COMMIT_SHORT_SHA}" \
+        --opt build-arg:BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --import-cache type=registry,ref="${CACHE_IMAGE}" \
+        --export-cache type=registry,ref="${CACHE_IMAGE}",mode=max \
+        --output "type=image,\"name=${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA},${IMAGE_NAME}:latest\",compression=gzip,force-compression=true,push=true"
+
+scan:dockle:
+  stage: scan
+  image: ${HARBOR_REGISTRY}/library/docker-scanner:latest
+  needs: [build:image]
+  variables:
+    DOCKER_CONTENT_TRUST: "1"
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        paths: *python_docker_changes
+    - if: $CI_COMMIT_TAG
+    - when: never
+  before_script:
+    - mkdir -p "${HOME:-/root}/.docker"
+    - |
+      if [ -n "${DOCKER_AUTH_CONFIG:-}" ]; then
+        printf '%s' "${DOCKER_AUTH_CONFIG}" > "${HOME:-/root}/.docker/config.json"
+      fi
+  script:
+    - dockle "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"

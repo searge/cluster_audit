@@ -4,19 +4,26 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
+# Runtime only — what `src/mks` actually imports. Notebook tooling lives in the
+# `notebooks` group below, so the container image does not ship Jupyter.
+# `diskcache` looks unused but is loaded via importlib in `ovh_client` and
+# `rancher_users_export_service` — do not "clean it up".
 dependencies = [
     "diskcache>=5.6.3",
-    "google>=3.0.0",
     "httpx>=0.28.1",
-    "jupyter>=1.1.1",
-    "kubernetes>=35.0.0",
     "pandas>=2.3.1",
-    "plotly>=6.6.0",
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.2.1",
     "rich>=14.3.2",
     "typer>=0.23.0",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mks"]
 
 [project.scripts]
 mks = "mks.cli.main:main"
@@ -34,6 +41,17 @@ dev = [
     "ruff>=0.12.7",
     "ty>=0.0.15",
 ]
+# Exploratory only, used from notebooks/ — never imported by src/mks.
+# The old `google` pin was dropped: that PyPI package is an empty namespace
+# stub. The notebooks import `google.colab` (only exists inside the Colab
+# runtime) and `google.auth` (which ships in `google-auth`) — neither ever came
+# from it. Notebooks are Colab-first by design, so nothing is added back here.
+notebooks = [
+    "jupyter>=1.1.1",
+    "kubernetes>=35.0.0",
+    "plotly>=6.6.0",
+]
+
 
 [tool.ruff]
 target-version = "py313"
@@ -78,3 +96,6 @@ strict_equality = true
 
 [tool.uv]
 package = true
+# Both groups install on a plain `uv sync`, so local work is unchanged.
+# The image build passes --no-default-groups to get runtime deps only.
+default-groups = ["dev", "notebooks"]
