@@ -6,6 +6,7 @@ inflated requests that currently drive node count. Read-only.
 """
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mks.application._step_report import banner, info, ok, warn
@@ -24,6 +25,17 @@ class _NsDemand:
     cpu_req: float  # cores
     cpu_p95: float  # cores
     cpu_max: float  # cores; burst signal — p95-based quota unsafe when cpu_max >> p95
+    mem_req_gb: float
+    mem_max_gb: float
+
+
+@dataclass(frozen=True)
+class _ClusterTotals:
+    """Cluster-wide requests vs observed peak, plus the node count they drive."""
+
+    nodes: float
+    cpu_req: float  # cores
+    cpu_p95: float  # cores
     mem_req_gb: float
     mem_max_gb: float
 
@@ -65,6 +77,7 @@ def build_queries(window: str) -> dict[str, str]:
             f"topk(15, max_over_time(sum by (namespace, pod) "
             f"(container_memory_working_set_bytes{_C})[{window}:30m]))"
         ),
+        "node_count": "count(kube_node_info)",
     }
 
 
@@ -131,17 +144,62 @@ def _write_spikers_csv(data_dir: str, client: PrometheusClient, query: str) -> N
     )
 
 
-def _print_cluster(client: PrometheusClient, queries: dict[str, str]) -> None:
+def _collect_cluster(
+    client: PrometheusClient, queries: dict[str, str]
+) -> _ClusterTotals:
+    return _ClusterTotals(
+        nodes=client.scalar(queries["node_count"]) or 0.0,
+        cpu_req=client.scalar(queries["cpu_req_total"]) or 0.0,
+        cpu_p95=client.scalar(queries["cpu_p95_total"]) or 0.0,
+        mem_req_gb=(client.scalar(queries["mem_req_total"]) or 0.0) / 1024**3,
+        mem_max_gb=(client.scalar(queries["mem_max_total"]) or 0.0) / 1024**3,
+    )
+
+
+def _print_cluster(totals: _ClusterTotals) -> None:
     """Print cluster-level requests vs real demand (STEP 3)."""
     banner(3, "Cluster demand vs requests")
-    cpu_req = client.scalar(queries["cpu_req_total"]) or 0.0
-    cpu_p95 = client.scalar(queries["cpu_p95_total"]) or 0.0
-    mem_req = (client.scalar(queries["mem_req_total"]) or 0.0) / 1024**3
-    mem_max = (client.scalar(queries["mem_max_total"]) or 0.0) / 1024**3
-    info(f"CPU  requested {cpu_req:6.1f} cores | p95 used {cpu_p95:6.1f} cores")
-    info(f"     reclaimable ≈ {cpu_req - cpu_p95:.1f} cores (over-request)")
-    info(f"MEM  requested {mem_req:6.1f} GB    | max used {mem_max:6.1f} GB")
-    ok(f"right-sized target ≈ {cpu_p95:.0f} cores / {mem_max:.0f} GB (before headroom)")
+    info(f"NODES {totals.nodes:.0f}")
+    info(
+        f"CPU  requested {totals.cpu_req:6.1f} cores "
+        f"| p95 used {totals.cpu_p95:6.1f} cores"
+    )
+    info(
+        f"     reclaimable ≈ {totals.cpu_req - totals.cpu_p95:.1f} cores (over-request)"
+    )
+    info(
+        f"MEM  requested {totals.mem_req_gb:6.1f} GB    "
+        f"| max used {totals.mem_max_gb:6.1f} GB"
+    )
+    ok(
+        f"right-sized target ≈ {totals.cpu_p95:.0f} cores / "
+        f"{totals.mem_max_gb:.0f} GB (before headroom)"
+    )
+
+
+def _write_cluster_totals_csv(
+    data_dir: str, totals: _ClusterTotals, window: str
+) -> None:
+    """One-row trend record. Concatenating runs is what shows drift over months."""
+    header = [
+        "date",
+        "window",
+        "nodes",
+        "cpuReqCores",
+        "cpuP95Cores",
+        "memReqGB",
+        "memMaxGB",
+    ]
+    row = [
+        datetime.now(UTC).strftime("%Y-%m-%d"),
+        window,
+        f"{totals.nodes:.0f}",
+        f"{totals.cpu_req:.2f}",
+        f"{totals.cpu_p95:.2f}",
+        f"{totals.mem_req_gb:.2f}",
+        f"{totals.mem_max_gb:.2f}",
+    ]
+    write_csv(Path(data_dir) / "cluster_totals.csv", header, [row])
 
 
 def execute_capacity_plan(
@@ -167,10 +225,12 @@ def execute_capacity_plan(
     out_path = _write_namespaces_csv(data_dir, rows)
     _write_spikers_csv(data_dir, client, queries["mem_spikers"])
 
-    _print_cluster(client, queries)
+    totals = _collect_cluster(client, queries)
+    _print_cluster(totals)
+    _write_cluster_totals_csv(data_dir, totals, window)
 
     banner(4, "Write CSV")
-    ok(f"wrote {out_path} (+ mem_spikers.csv)")
+    ok(f"wrote {out_path} (+ mem_spikers.csv, cluster_totals.csv)")
     return str(out_path)
 
 
