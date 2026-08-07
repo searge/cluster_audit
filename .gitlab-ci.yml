@@ -141,11 +141,5 @@ scan:dockle:
         paths: *python_docker_changes
     - if: $CI_COMMIT_TAG
     - when: never
-  before_script:
-    - mkdir -p "${HOME:-/root}/.docker"
-    - |
-      if [ -n "${DOCKER_AUTH_CONFIG:-}" ]; then
-        printf '%s' "${DOCKER_AUTH_CONFIG}" > "${HOME:-/root}/.docker/config.json"
-      fi
   script:
-    - dockle "${IMAGE_NAME}:${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
+    - scripts/ci/scan-image.sh

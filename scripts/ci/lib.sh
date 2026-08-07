@@ -29,8 +29,17 @@ setup_ca() {
     fi
 
     _bundle="${CI_PROJECT_DIR:-$PWD}/.certs/ca-certificates.crt"
+    _system="/etc/ssl/certs/ca-certificates.crt"
     mkdir -p "$(dirname "${_bundle}")"
-    cat /etc/ssl/certs/ca-certificates.crt "${SMILE_CA_PEM}" >"${_bundle}"
+    # Same defensiveness as above: not every image ships a system bundle, and
+    # `cat` on a missing one would kill the job over a file we only wanted to
+    # append to.
+    if [ -r "${_system}" ]; then
+        cat "${_system}" "${SMILE_CA_PEM}" >"${_bundle}"
+    else
+        log "no system CA bundle at ${_system} — using SMILE_CA_PEM alone"
+        cat "${SMILE_CA_PEM}" >"${_bundle}"
+    fi
 
     CI_CA_BUNDLE="${_bundle}"
     SSL_CERT_FILE="${_bundle}"
