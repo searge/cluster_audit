@@ -5,39 +5,16 @@ rancher-monitoring, so node-pool sizing is based on real demand, not the
 inflated requests that currently drive node count. Read-only.
 """
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from mks.application._step_report import banner, info, ok, warn
 from mks.application.use_case_utils import write_csv
+from mks.domain.capacity import ClusterTotals, MemSpiker, NsDemand
 from mks.infrastructure.prometheus_client import PrometheusClient
 
 # Container filter shared by usage queries (exclude pause/empty containers).
 _C = '{container!="",container!="POD"}'
-
-
-@dataclass(frozen=True)
-class _NsDemand:
-    """Per-namespace requests vs observed peak usage."""
-
-    namespace: str
-    cpu_req: float  # cores
-    cpu_p95: float  # cores
-    cpu_max: float  # cores; burst signal — p95-based quota unsafe when cpu_max >> p95
-    mem_req_gb: float
-    mem_max_gb: float
-
-
-@dataclass(frozen=True)
-class _ClusterTotals:
-    """Cluster-wide requests vs observed peak, plus the node count they drive."""
-
-    nodes: float
-    cpu_req: float  # cores
-    cpu_p95: float  # cores
-    mem_req_gb: float
-    mem_max_gb: float
 
 
 def build_queries(window: str) -> dict[str, str]:
@@ -87,9 +64,10 @@ def _by_ns(client: PrometheusClient, query: str) -> dict[str, float]:
     }
 
 
-def _collect_namespaces(
+def collect_namespaces(
     client: PrometheusClient, queries: dict[str, str]
-) -> list[_NsDemand]:
+) -> list[NsDemand]:
+    """Per-namespace demand, sorted by reserved-but-unused CPU (worst first)."""
     cpu_req = _by_ns(client, queries["cpu_req_by_ns"])
     cpu_p95 = _by_ns(client, queries["cpu_p95_by_ns"])
     cpu_max = _by_ns(client, queries["cpu_max_by_ns"])
@@ -97,7 +75,7 @@ def _collect_namespaces(
     mem_max = _by_ns(client, queries["mem_max_by_ns"])
     names = cpu_req.keys() | cpu_p95.keys() | mem_req.keys() | mem_max.keys()
     rows = [
-        _NsDemand(
+        NsDemand(
             namespace=ns,
             cpu_req=cpu_req.get(ns, 0.0),
             cpu_p95=cpu_p95.get(ns, 0.0),
@@ -107,10 +85,23 @@ def _collect_namespaces(
         )
         for ns in names
     ]
-    return sorted(rows, key=lambda r: r.cpu_req - r.cpu_p95, reverse=True)
+    return sorted(rows, key=lambda r: r.cpu_phantom, reverse=True)
 
 
-def _write_namespaces_csv(data_dir: str, rows: list[_NsDemand]) -> Path:
+def collect_spikers(client: PrometheusClient, query: str) -> list[MemSpiker]:
+    """Top pods by peak memory over the window, largest first."""
+    rows = [
+        MemSpiker(
+            namespace=labels.get("namespace", "?"),
+            pod=labels.get("pod", "?"),
+            mem_max_gb=value / 1024**3,
+        )
+        for labels, value in client.instant(query)
+    ]
+    return sorted(rows, key=lambda r: r.mem_max_gb, reverse=True)
+
+
+def _write_namespaces_csv(data_dir: str, rows: list[NsDemand]) -> Path:
     header = [
         "namespace",
         "cpuReqCores",
@@ -133,21 +124,17 @@ def _write_namespaces_csv(data_dir: str, rows: list[_NsDemand]) -> Path:
     return write_csv(Path(data_dir) / "namespace_demand.csv", header, table)
 
 
-def _write_spikers_csv(data_dir: str, client: PrometheusClient, query: str) -> None:
-    rows = [
-        [labels.get("namespace", "?"), labels.get("pod", "?"), f"{value / 1024**3:.2f}"]
-        for labels, value in client.instant(query)
-    ]
-    rows.sort(key=lambda r: float(r[2]), reverse=True)
+def _write_spikers_csv(data_dir: str, spikers: list[MemSpiker]) -> None:
     write_csv(
-        Path(data_dir) / "mem_spikers.csv", ["namespace", "pod", "memMaxGB"], rows
+        Path(data_dir) / "mem_spikers.csv",
+        ["namespace", "pod", "memMaxGB"],
+        [[s.namespace, s.pod, f"{s.mem_max_gb:.2f}"] for s in spikers],
     )
 
 
-def _collect_cluster(
-    client: PrometheusClient, queries: dict[str, str]
-) -> _ClusterTotals:
-    return _ClusterTotals(
+def collect_cluster(client: PrometheusClient, queries: dict[str, str]) -> ClusterTotals:
+    """Cluster-wide totals: node count, requested vs actually used."""
+    return ClusterTotals(
         nodes=client.scalar(queries["node_count"]) or 0.0,
         cpu_req=client.scalar(queries["cpu_req_total"]) or 0.0,
         cpu_p95=client.scalar(queries["cpu_p95_total"]) or 0.0,
@@ -156,7 +143,7 @@ def _collect_cluster(
     )
 
 
-def _print_cluster(totals: _ClusterTotals) -> None:
+def _print_cluster(totals: ClusterTotals) -> None:
     """Print cluster-level requests vs real demand (STEP 3)."""
     banner(3, "Cluster demand vs requests")
     info(f"NODES {totals.nodes:.0f}")
@@ -178,7 +165,7 @@ def _print_cluster(totals: _ClusterTotals) -> None:
 
 
 def _write_cluster_totals_csv(
-    data_dir: str, totals: _ClusterTotals, window: str
+    data_dir: str, totals: ClusterTotals, window: str
 ) -> None:
     """One-row trend record. Concatenating runs is what shows drift over months."""
     header = [
@@ -220,12 +207,12 @@ def execute_capacity_plan(
     ok(f"querying {prometheus_url} over window {window}")
 
     banner(2, "Per-namespace demand")
-    rows = _collect_namespaces(client, queries)
+    rows = collect_namespaces(client, queries)
     ok(f"{len(rows)} namespaces with metrics")
     out_path = _write_namespaces_csv(data_dir, rows)
-    _write_spikers_csv(data_dir, client, queries["mem_spikers"])
+    _write_spikers_csv(data_dir, collect_spikers(client, queries["mem_spikers"]))
 
-    totals = _collect_cluster(client, queries)
+    totals = collect_cluster(client, queries)
     _print_cluster(totals)
     _write_cluster_totals_csv(data_dir, totals, window)
 
@@ -234,4 +221,10 @@ def execute_capacity_plan(
     return str(out_path)
 
 
-__all__ = ["build_queries", "execute_capacity_plan"]
+__all__ = [
+    "build_queries",
+    "collect_cluster",
+    "collect_namespaces",
+    "collect_spikers",
+    "execute_capacity_plan",
+]

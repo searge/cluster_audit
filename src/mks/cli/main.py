@@ -9,6 +9,7 @@ from rich.console import Console
 from mks.application import (
     BillingExportParams,
     execute_billing_export,
+    execute_capacity_ingest,
     execute_capacity_plan,
     execute_cluster_inventory,
     execute_dashboard_summary,
@@ -628,6 +629,53 @@ def capacity_plan_command(
         )
         if run is not None:
             console.print(f"[green]Run:[/green] {run.output_dir}")
+    except (ValueError, RuntimeError) as exc:  # pragma: no cover
+        _handle_error(exc)
+
+
+@app.command("capacity-ingest")
+def capacity_ingest_command(
+    prom_url: str | None = typer.Option(
+        None,
+        "--prom-url",
+        help="Prometheus base URL. Defaults to PROMETHEUS_URL.",
+    ),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        help="Postgres DSN for the trend store. Defaults to DATABASE_URL.",
+    ),
+    window: str = typer.Option(
+        "7d",
+        "--window",
+        help="Look-back window for peak usage (PromQL range, e.g. 7d, 14d).",
+    ),
+    cluster: str = typer.Option(
+        "smile-ovh",
+        "--cluster",
+        help="Cluster label stored with the snapshot.",
+    ),
+    insecure: bool = typer.Option(
+        False,
+        "--insecure",
+        help="Skip TLS verification (self-signed Prometheus ingress).",
+    ),
+) -> None:
+    """Persist one capacity snapshot into Postgres (trend store for Grafana).
+
+    Same numbers as `capacity-plan`, but accumulated: Prometheus only retains
+    15 days, so month-scale trends must be stored as they happen.
+    """
+    try:
+        snapshot_id = execute_capacity_ingest(
+            database_url=database_url,
+            prometheus_url=prom_url,
+            window=window,
+            cluster=cluster,
+            verify_tls=not insecure,
+        )
+        if snapshot_id is not None:
+            console.print(f"[green]Snapshot:[/green] #{snapshot_id}")
     except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
 

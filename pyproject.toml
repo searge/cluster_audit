@@ -12,6 +12,7 @@ dependencies = [
     "kubernetes>=35.0.0",
     "pandas>=2.3.1",
     "plotly>=6.6.0",
+    "psycopg[binary]>=3.2",
     "python-dotenv>=1.2.1",
     "rich>=14.3.2",
     "typer>=0.23.0",
