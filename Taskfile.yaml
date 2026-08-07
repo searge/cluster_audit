@@ -61,6 +61,28 @@ tasks:
       - "{{.UV_ENV}} uv run python -m mypy {{.CLI_ARGS | default '.'}}"
       - "{{.UV_ENV}} uv run pyright {{.CLI_ARGS | default '.'}}"
 
+  local-up:
+    desc: "Local capacity stack (Postgres + Grafana on :3000). Needs a Prometheus port-forward."
+    cmds:
+      - podman-compose up -d
+      - echo "Grafana → http://localhost:3000 (admin/admin)"
+
+  local-ingest:
+    desc: "Pull one snapshot into the local Postgres (port-forward Prometheus to :19090 first)"
+    cmds:
+      # Rebuild first — this runs the image, not the working tree, and a stale
+      # image silently ingests with the previous version's queries.
+      - podman-compose --profile tools build ingest
+      - podman-compose --profile tools run --rm ingest
+      # podman-compose rebuilds the project when the profile set changes, which
+      # stops the services outside the profile. Put Grafana back.
+      - podman-compose up -d
+
+  local-down:
+    desc: "Stop the local stack (add -- -v to drop the database volume too)"
+    cmds:
+      - 'podman-compose down {{.CLI_ARGS}}'
+
   clean:
     desc: Clean up old report files (>14 days)
     cmds:

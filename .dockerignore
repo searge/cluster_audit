@@ -31,3 +31,5 @@ Dockerfile
 .codacy
 .cursor
 .mcp.json
+deploy
+docker-compose.yaml

@@ -1,0 +1,79 @@
+---
+# Local capacity stack: Postgres + Grafana, plus the ingest image on demand.
+#
+# This exists to build and iterate on the Grafana dashboard against real data
+# without touching the cluster. The dashboard JSON produced here is the same
+# file that gets provisioned in-cluster later.
+#
+# Prometheus is NOT part of this stack — the numbers must come from the real
+# rancher-monitoring. Open a port-forward first:
+#
+#   kubectl --context smile-ovh -n cattle-monitoring-system \
+#     port-forward svc/rancher-monitoring-prometheus 19090:9090
+#
+# Then:
+#   podman-compose up -d                     # postgres + grafana
+#   podman-compose run --rm ingest           # pull one snapshot into postgres
+#   xdg-open http://localhost:3000           # admin/admin
+#
+# Everything is disposable: `podman-compose down -v` removes the data.
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-capacity}
+      POSTGRES_DB: ${POSTGRES_DB:-capacity}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-capacity}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    image: docker.io/grafana/grafana:11.6.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Local only. Nothing here is reused in the cluster.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-capacity}
+      POSTGRES_DB: ${POSTGRES_DB:-capacity}
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
+  # Not started by `up`. Run it when you want a fresh snapshot:
+  #   podman-compose --profile tools run --rm ingest
+  #
+  # Host networking, deliberately: `kubectl port-forward` binds 127.0.0.1 only,
+  # so a container on a bridge network cannot reach it. The alternative —
+  # port-forward --address 0.0.0.0 — would publish the cluster's Prometheus to
+  # the LAN to save one line here. Postgres is reached over its published port
+  # for the same reason.
+  ingest:
+    build:
+      context: .
+    profiles: ["tools"]
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://localhost:19090}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-capacity}@localhost:15432/${POSTGRES_DB:-capacity}
+    command: ["capacity-ingest", "--window", "7d"]
+
+volumes:
+  pgdata:
