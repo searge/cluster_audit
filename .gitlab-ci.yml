@@ -1,7 +1,8 @@
 ---
-# Mirrors the git-mm-bridge pipeline shape (Harbor + BuildKit rootless +
-# hadolint/trivy/dockle), adapted for a Python batch image. No deploy stage:
-# the CronJob that runs this image is deployed from the ovh-cluster GitOps repo.
+# Thin by design: every job is one call into scripts/ci/, so the logic is
+# runnable and testable outside GitLab. Pipeline shape follows git-mm-bridge
+# (Harbor + rootless BuildKit + hadolint/trivy/dockle); there is no deploy
+# stage — the CronJob that runs this image lives in the ovh-cluster GitOps repo.
 stages:
   - test
   - build
@@ -10,17 +11,6 @@ stages:
 default:
   tags:
     - galaxy-docker-shared
-
-########################################################################
-# Configuration
-########################################################################
-
-.smile-ca:
-  before_script:
-    - |
-      mkdir -p "${CI_PROJECT_DIR}/.certs"
-      cat /etc/ssl/certs/ca-certificates.crt "${SMILE_CA_PEM}" > "${CI_PROJECT_DIR}/.certs/ca-certificates.crt"
-      export SSL_CERT_FILE="${CI_PROJECT_DIR}/.certs/ca-certificates.crt"
 
 .dockerfile-changes: &dockerfile_changes
   - .dockerignore
@@ -32,6 +22,7 @@ default:
   - pyproject.toml
   - uv.lock
   - Taskfile.yaml
+  - scripts/ci/**/*
   - src/**/*
   - config/**/*
 
@@ -44,8 +35,6 @@ variables:
   PYTHON_BUILD_IMAGE: ${HARBOR_REGISTRY}/dhi/python:3.13-debian13-dev
   PYTHON_RUNTIME_IMAGE: ${HARBOR_REGISTRY}/dhi/python:3.13-debian13
   UV_VERSION: 0.9.6
-  # task from PyPI: the DHI python image ships no curl/wget, so the upstream
-  # install.sh is not an option.
   TASK_VERSION: 3.52.0
 
 ########################################################################
@@ -73,19 +62,8 @@ test:gate:
         paths: *python_docker_changes
     - if: $CI_COMMIT_TAG
     - when: never
-  # No .smile-ca here on purpose: SMILE_CA_PEM is a protected variable, so it is
-  # empty on merge-request pipelines and `cat ""` fails the job before anything
-  # runs. Only the jobs that push to Harbor (and therefore only run on main or a
-  # tag) need the CA — same split as git-mm-bridge.
-  before_script:
-    # pyright downloads its own prebuilt node, which links against
-    # libatomic.so.1 — stripped out of the hardened image. Without this the
-    # typecheck step dies with a loader error, not a type error.
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends libatomic1
-    - pip install --no-cache-dir --root-user-action=ignore "uv==${UV_VERSION}" "go-task-bin==${TASK_VERSION}"
   script:
-    # `ci`, not `test`: the CI gate must fail on unformatted code, not rewrite it.
-    - task ci -- src/
+    - scripts/ci/gate.sh
 
 ########################################################################
 # Docker
@@ -141,17 +119,6 @@ build:image:
       optional: true
     - job: test:trivy:config
       optional: true
-  variables:
-    BUILDKITD_FLAGS: --oci-worker-no-process-sandbox
-  before_script:
-    - !reference [.smile-ca, before_script]
-    - |
-      mkdir -p "${CI_PROJECT_DIR}/.buildkit"
-      cat > "${CI_PROJECT_DIR}/.buildkit/buildkitd.toml" <<EOF
-      [registry."${HARBOR_REGISTRY}"]
-        ca = ["${SMILE_CA_PEM}"]
-      EOF
-      export BUILDKITD_FLAGS="${BUILDKITD_FLAGS} --config ${CI_PROJECT_DIR}/.buildkit/buildkitd.toml"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       changes:
@@ -159,22 +126,7 @@ build:image:
     - if: $CI_COMMIT_TAG
     - when: never
   script:
-    - |
-      buildctl-daemonless.sh build \
-        --progress=plain \
-        --frontend dockerfile.v0 \
-        --local context="${CI_PROJECT_DIR}" \
-        --local dockerfile="${CI_PROJECT_DIR}" \
-        --opt filename=Dockerfile \
-        --opt build-arg:PYTHON_BUILD_IMAGE="${PYTHON_BUILD_IMAGE}" \
-        --opt build-arg:PYTHON_RUNTIME_IMAGE="${PYTHON_RUNTIME_IMAGE}" \
-        --opt build-arg:UV_VERSION="${UV_VERSION}" \
-        --opt build-arg:VERSION="${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}" \
-        --opt build-arg:COMMIT="${CI_COMMIT_SHORT_SHA}" \
-        --opt build-arg:BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        --import-cache type=registry,ref="${CACHE_IMAGE}" \
-        --export-cache type=registry,ref="${CACHE_IMAGE}",mode=max \
-        --output "type=image,\"name=${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA},${IMAGE_NAME}:latest\",compression=gzip,force-compression=true,push=true"
+    - scripts/ci/build-image.sh
 
 scan:dockle:
   stage: scan
@@ -196,4 +148,4 @@ scan:dockle:
         printf '%s' "${DOCKER_AUTH_CONFIG}" > "${HOME:-/root}/.docker/config.json"
       fi
   script:
-    - dockle "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
+    - dockle "${IMAGE_NAME}:${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
