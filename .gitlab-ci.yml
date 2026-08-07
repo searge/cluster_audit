@@ -44,7 +44,9 @@ variables:
   PYTHON_BUILD_IMAGE: ${HARBOR_REGISTRY}/dhi/python:3.13-debian13-dev
   PYTHON_RUNTIME_IMAGE: ${HARBOR_REGISTRY}/dhi/python:3.13-debian13
   UV_VERSION: 0.9.6
-  TASK_VERSION: v3.50.0
+  # task from PyPI: the DHI python image ships no curl/wget, so the upstream
+  # install.sh is not an option.
+  TASK_VERSION: 3.52.0
 
 ########################################################################
 # Python
@@ -71,10 +73,16 @@ test:gate:
         paths: *python_docker_changes
     - if: $CI_COMMIT_TAG
     - when: never
+  # No .smile-ca here on purpose: SMILE_CA_PEM is a protected variable, so it is
+  # empty on merge-request pipelines and `cat ""` fails the job before anything
+  # runs. Only the jobs that push to Harbor (and therefore only run on main or a
+  # tag) need the CA — same split as git-mm-bridge.
   before_script:
-    - !reference [.smile-ca, before_script]
-    - pip install --no-cache-dir "uv==${UV_VERSION}"
-    - sh -c "$(curl -sSL https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin "${TASK_VERSION}"
+    # pyright downloads its own prebuilt node, which links against
+    # libatomic.so.1 — stripped out of the hardened image. Without this the
+    # typecheck step dies with a loader error, not a type error.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends libatomic1
+    - pip install --no-cache-dir --root-user-action=ignore "uv==${UV_VERSION}" "go-task-bin==${TASK_VERSION}"
   script:
     # `ci`, not `test`: the CI gate must fail on unformatted code, not rewrite it.
     - task ci -- src/
