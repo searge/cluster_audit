@@ -584,6 +584,18 @@ def execute_capacity_ingest(
     )
     history = db.scalar("SELECT count(*) FROM capacity_snapshot")
     ok(f"snapshot #{snapshot_id} stored; {history} snapshots in history")
+
+    # The snapshot is committed first, then the run is failed. Degrading kept
+    # the week's capacity data, which is right, but on its own it also hid a
+    # missing RBAC rule behind a job that reported success: no euro figures, no
+    # failed job, nothing for kube_job_failed to catch. Exiting non-zero after
+    # the write turns that into an alert without costing the data.
+    if cost is None:
+        raise RuntimeError(
+            "snapshot stored without cost data; the Kubernetes reads failed. "
+            "Check the ClusterRole in apps/platform-capacity/kustomize/rbac.yaml "
+            "against the calls in kube_client.py"
+        )
     return snapshot_id
 
 
