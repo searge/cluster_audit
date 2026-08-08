@@ -124,8 +124,8 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Memory used beyond requests (GiB)",
-      "description": "peak minus requested. Positive means workloads run on memory nobody reserved — the MemoryPressure/eviction axis, not the cost axis.",
+      "title": "Storage nobody mounts",
+      "description": "Block storage claimed by namespaces where no pod mounts it. Billed from the moment a claim is Bound, so an archived project keeps paying for volumes indefinitely. Unlike the CPU figure this is close to an actual cost: a volume belongs to one namespace and needs no allocation.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
       "gridPos": {
         "h": 4,
         "w": 8,
@@ -138,17 +138,17 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "decimals": 1,
+          "unit": "currencyEUR",
+          "decimals": 0,
           "color": {
             "mode": "fixed",
-            "fixedColor": "text"
+            "fixedColor": "#C97A1A"
           }
         },
         "overrides": []
       },
       "options": {
-        "colorMode": "none",
+        "colorMode": "value",
         "graphMode": "none",
         "textMode": "auto",
         "justifyMode": "auto",
@@ -170,7 +170,7 @@
           "editorMode": "code",
           "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT mem_max_gb - mem_req_gb AS shortfall FROM cluster_trend ORDER BY taken_at DESC LIMIT 1"
+          "rawSql": "SELECT floor(sum(storage_unmounted_gib) * max(eur_per_gib_month)) FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend)"
         }
       ]
     },
@@ -1298,6 +1298,167 @@
           "rawQuery": true,
           "format": "table",
           "rawSql": "SELECT project, namespaces, cpu_req_cores, cpu_p95_cores, cpu_phantom_cores, wasted_eur_month FROM project_trend WHERE taken_at = (SELECT max(taken_at) FROM project_trend) ORDER BY wasted_eur_month DESC NULLS LAST LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Namespaces by unmounted storage",
+      "description": "Volumes that are Bound, billed, and mounted by nothing. Most of these namespaces run no workload at all, which is why they are invisible in every CPU and memory panel: with no pods there are no metrics. Releasing a claim is the one action here that reduces the invoice immediately rather than deferring a purchase.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "project"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Project"
+              },
+              {
+                "id": "custom.width",
+                "value": 240
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "storage_gib"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Claimed (GiB)"
+              },
+              {
+                "id": "custom.width",
+                "value": 140
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "storage_unmounted_gib"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Unmounted (GiB)"
+              },
+              {
+                "id": "custom.width",
+                "value": 165
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_p95_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "CPU used (p95)"
+              },
+              {
+                "id": "custom.width",
+                "value": 140
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "storage_wasted_eur_month"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "EUR / month"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-reds"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "EUR / month",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT namespace, project, storage_gib, storage_unmounted_gib, cpu_p95_cores, storage_wasted_eur_month FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) AND storage_unmounted_gib > 1 ORDER BY storage_unmounted_gib DESC LIMIT 25"
         }
       ]
     }

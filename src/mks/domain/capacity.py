@@ -12,8 +12,14 @@ from mks.domain.cost import CostBasis
 
 
 @dataclass(frozen=True)
-class NsDemand:
-    """Per-namespace requests vs observed peak usage."""
+class NsDemand:  # pylint: disable=too-many-instance-attributes
+    """Per-namespace requests vs observed peak usage.
+
+    Wider than pylint's default because it is a record, not an object with
+    behaviour: one row of the snapshot, with a column per measurement. Grouping
+    the fields into sub-objects to satisfy the count would add indirection at
+    every call site and buy nothing.
+    """
 
     namespace: str
     cpu_req: float  # cores
@@ -24,6 +30,11 @@ class NsDemand:
     # Rancher project the namespace belongs to. Only the opaque id is available
     # from a downstream cluster; None for namespaces Rancher does not manage.
     project_id: str | None = None
+    # Block storage claimed, and the part of it no pod currently mounts. Billed
+    # from the moment a claim is Bound, so a project scaled to zero keeps paying
+    # for volumes that no metric will ever show as in use.
+    storage_gib: float = 0.0
+    storage_unmounted_gib: float = 0.0
 
     @property
     def cpu_phantom(self) -> float:

@@ -82,6 +82,48 @@ class KubeClient:
             raise KubeApiError(f"listing nodes failed: {exc}") from exc
         return out
 
+    def namespace_storage(self) -> dict[str, dict[str, float]]:
+        """Per namespace: ``{"gib", "unmounted_gib"}`` of block storage.
+
+        A PersistentVolumeClaim is billed from the moment it is Bound, whether
+        or not anything mounts it. Archived projects are scaled to zero but
+        their claims are never released, so the volumes keep costing without
+        appearing in any usage metric. Prometheus cannot answer this either:
+        it knows what is attached, not what is merely paid for.
+
+        "Unmounted" means no pod currently references the claim. A workload
+        scaled to zero counts as unmounted, which is the intent: that is exactly
+        the state that costs money for nothing.
+        """
+        try:
+            claims = self._core.list_persistent_volume_claim_for_all_namespaces(
+                _request_timeout=_TIMEOUT_SECONDS
+            )
+            pods = self._core.list_pod_for_all_namespaces(
+                _request_timeout=_TIMEOUT_SECONDS
+            )
+            mounted = {
+                (pod.metadata.namespace, volume.persistent_volume_claim.claim_name)
+                for pod in pods.items
+                for volume in (pod.spec.volumes or [])
+                if volume.persistent_volume_claim
+            }
+            out: dict[str, dict[str, float]] = {}
+            for claim in claims.items:
+                storage_class = claim.spec.storage_class_name or ""
+                if "cinder" not in storage_class:
+                    continue  # NFS and friends are not billed per gigabyte here
+                capacity = (claim.status.capacity or {}).get("storage", "0")
+                size = parse_memory(capacity) / 1024**3
+                namespace = claim.metadata.namespace
+                entry = out.setdefault(namespace, {"gib": 0.0, "unmounted_gib": 0.0})
+                entry["gib"] += size
+                if (namespace, claim.metadata.name) not in mounted:
+                    entry["unmounted_gib"] += size
+        except Exception as exc:  # noqa: BLE001 - ApiException, urllib3, parsing
+            raise KubeApiError(f"listing storage failed: {exc}") from exc
+        return out
+
     def namespace_projects(self) -> dict[str, str]:
         """Map namespace to Rancher project id, skipping those without one.
 

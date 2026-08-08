@@ -14,6 +14,7 @@ import asyncio
 from collections import Counter
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from mks.application._step_report import banner, info, ok, warn
@@ -30,6 +31,7 @@ from mks.domain.cost import (
     NodeFlavour,
     build_cost_basis,
     flavour_of,
+    money,
     pool_flavours,
 )
 from mks.infrastructure.kube_client import KubeApiError, KubeClient
@@ -100,7 +102,12 @@ ALTER TABLE capacity_snapshot
     ADD COLUMN IF NOT EXISTS binding_resource text;
 
 ALTER TABLE namespace_demand
-    ADD COLUMN IF NOT EXISTS project_id text;
+    ADD COLUMN IF NOT EXISTS project_id text,
+    ADD COLUMN IF NOT EXISTS storage_gib numeric(12,2),
+    ADD COLUMN IF NOT EXISTS storage_unmounted_gib numeric(12,2);
+
+ALTER TABLE capacity_snapshot
+    ADD COLUMN IF NOT EXISTS eur_per_gib_month numeric(12,4);
 
 -- Rancher project names. A downstream cluster only knows the opaque id, and the
 -- Project objects live in the Rancher management cluster, so this is filled in
@@ -135,6 +142,11 @@ SELECT s.taken_at,
        floor(d.cpu_req_cores * s.eur_per_core_month) AS reserved_eur_month,
        floor((d.cpu_req_cores - d.cpu_p95_cores) * s.eur_per_core_month)
            AS wasted_eur_month,
+       d.storage_gib,
+       d.storage_unmounted_gib,
+       s.eur_per_gib_month,
+       floor(d.storage_unmounted_gib * s.eur_per_gib_month)
+           AS storage_wasted_eur_month,
        d.cpu_req_cores,
        d.cpu_p95_cores,
        d.cpu_max_cores,
@@ -169,8 +181,12 @@ SELECT s.id                                        AS snapshot_id,
        sum(d.cpu_req_cores - d.cpu_p95_cores) AS cpu_phantom_cores,
        sum(d.mem_req_gb)                     AS mem_req_gb,
        sum(d.mem_max_gb)                     AS mem_max_gb,
+       sum(d.storage_gib)                    AS storage_gib,
+       sum(d.storage_unmounted_gib)          AS storage_unmounted_gib,
        floor(sum(d.cpu_req_cores - d.cpu_p95_cores) * min(s.eur_per_core_month))
-           AS wasted_eur_month
+           AS wasted_eur_month,
+       floor(sum(d.storage_unmounted_gib) * min(s.eur_per_gib_month))
+           AS storage_wasted_eur_month
 FROM namespace_demand d
 JOIN capacity_snapshot s ON s.id = d.snapshot_id
 LEFT JOIN project_name n ON n.project_id = d.project_id
@@ -194,6 +210,7 @@ SELECT taken_at,
        priced_nodes,
        unpriced_nodes,
        binding_resource,
+       eur_per_gib_month,
        floor((cpu_req_cores - cpu_p95_cores) * eur_per_core_month) AS wasted_eur_month
 FROM capacity_snapshot;
 """
@@ -216,8 +233,8 @@ INSERT INTO capacity_snapshot
     (cluster, taken_at, window_spec, nodes,
      cpu_req_cores, cpu_p95_cores, mem_req_gb, mem_max_gb,
      eur_per_core_month, node_bill_eur_month,
-     priced_nodes, unpriced_nodes, binding_resource)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+     priced_nodes, unpriced_nodes, binding_resource, eur_per_gib_month)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (cluster, taken_at, window_spec) DO UPDATE SET
     nodes = EXCLUDED.nodes,
     cpu_req_cores = EXCLUDED.cpu_req_cores,
@@ -228,17 +245,21 @@ ON CONFLICT (cluster, taken_at, window_spec) DO UPDATE SET
     node_bill_eur_month = EXCLUDED.node_bill_eur_month,
     priced_nodes = EXCLUDED.priced_nodes,
     unpriced_nodes = EXCLUDED.unpriced_nodes,
-    binding_resource = EXCLUDED.binding_resource
+    binding_resource = EXCLUDED.binding_resource,
+    eur_per_gib_month = EXCLUDED.eur_per_gib_month
 RETURNING id
 """
 
 _INSERT_NS = """
 INSERT INTO namespace_demand
     (snapshot_id, namespace, cpu_req_cores, cpu_p95_cores,
-     cpu_max_cores, mem_req_gb, mem_max_gb, project_id)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+     cpu_max_cores, mem_req_gb, mem_max_gb, project_id,
+     storage_gib, storage_unmounted_gib)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (snapshot_id, namespace) DO UPDATE SET
     project_id = EXCLUDED.project_id,
+    storage_gib = EXCLUDED.storage_gib,
+    storage_unmounted_gib = EXCLUDED.storage_unmounted_gib,
     cpu_req_cores = EXCLUDED.cpu_req_cores,
     cpu_p95_cores = EXCLUDED.cpu_p95_cores,
     cpu_max_cores = EXCLUDED.cpu_max_cores,
@@ -316,20 +337,57 @@ def _fleet_inventory(nodes: list[dict[str, Any]]) -> list[NodeFlavour]:
         warn("no price reference at config/ovh_prices.toml; storing without costs")
     learned = pool_flavours(nodes, frozenset(prices.flavors))
     counts: Counter[str | None] = Counter()
-    cores: dict[str | None, float] = {}
+    cores: dict[str | None, Decimal] = {}
     for node in nodes:
         name = flavour_of(node, learned)
         counts[name] += 1
-        cores[name] = cores.get(name, 0.0) + float(node["cpu"])
+        # Cores cross into Decimal here rather than at the multiplication: a
+        # fleet total accumulated in float would already be off by the time it
+        # reached the division.
+        cores[name] = cores.get(name, Decimal(0)) + (money(node["cpu"]) or Decimal(0))
     return [
         NodeFlavour(
             name=name or "unknown",
             count=count,
             cores=cores[name],
-            monthly_eur=prices.flavors[name].monthly_eur if name else None,
-            hourly_eur=prices.flavors[name].hourly_eur if name else None,
+            monthly_eur=money(prices.flavors[name].monthly_eur) if name else None,
+            hourly_eur=money(prices.flavors[name].hourly_eur) if name else None,
         )
         for name, count in counts.items()
+    ]
+
+
+def _storage_only_rows(
+    measured: list[NsDemand],
+    projects: dict[str, str],
+    storage: dict[str, dict[str, float]],
+) -> list[NsDemand]:
+    """Rows for namespaces that hold volumes but produce no metrics.
+
+    A namespace scaled to zero has no containers, so Prometheus carries no
+    series for it and it never appears in the demand query. Its volumes are
+    still Bound and still billed. Dropping those namespaces would have hidden
+    the larger part of the storage waste behind the fact that nothing is
+    running: on this cluster, 83 namespaces and 1643 GiB of the 2040 unmounted.
+
+    They enter the snapshot with zero CPU and memory, which is not a gap in the
+    data but the finding itself: paying for storage attached to nothing.
+    """
+    seen = {row.namespace for row in measured}
+    return [
+        NsDemand(
+            namespace=namespace,
+            cpu_req=0.0,
+            cpu_p95=0.0,
+            cpu_max=0.0,
+            mem_req_gb=0.0,
+            mem_max_gb=0.0,
+            project_id=projects.get(namespace),
+            storage_gib=sizes.get("gib", 0.0),
+            storage_unmounted_gib=sizes.get("unmounted_gib", 0.0),
+        )
+        for namespace, sizes in storage.items()
+        if namespace not in seen
     ]
 
 
@@ -352,13 +410,23 @@ def collect_cluster_context(
         kube = KubeClient()
         nodes = kube.list_nodes()
         projects = kube.namespace_projects()
+        storage = kube.namespace_storage()
     except KubeApiError as exc:
         warn(f"Kubernetes API unavailable, no project or cost data: {exc}")
         return namespaces, None
 
     enriched = [
-        replace(row, project_id=projects.get(row.namespace)) for row in namespaces
+        replace(
+            row,
+            project_id=projects.get(row.namespace),
+            storage_gib=storage.get(row.namespace, {}).get("gib", 0.0),
+            storage_unmounted_gib=storage.get(row.namespace, {}).get(
+                "unmounted_gib", 0.0
+            ),
+        )
+        for row in namespaces
     ]
+    enriched.extend(_storage_only_rows(namespaces, projects, storage))
     flavours = _fleet_inventory(nodes)
 
     # Which resource is closer to full decides whether pricing by the core is
@@ -375,6 +443,7 @@ def collect_cluster_context(
         flavours,
         totals.cpu_req / allocatable_cores if allocatable_cores else 0.0,
         totals.mem_req_gb / allocatable_memory if allocatable_memory else 0.0,
+        money(load_prices().volume_high_speed_eur_per_gb_month) or None,
     )
     if cost is None:
         warn("no node flavour matched the price reference; storing without costs")
@@ -412,6 +481,7 @@ def _store_in(
             cost.priced_nodes if cost else None,
             cost.unpriced_nodes if cost else None,
             cost.binding_resource if cost else None,
+            cost.eur_per_gib_month if cost else None,
         ),
     )
     # An upsert alone leaves rows behind for namespaces deleted between runs and
@@ -431,6 +501,8 @@ def _store_in(
                 r.mem_req_gb,
                 r.mem_max_gb,
                 r.project_id,
+                r.storage_gib,
+                r.storage_unmounted_gib,
             )
             for r in snapshot.namespaces
         ],
@@ -440,6 +512,25 @@ def _store_in(
         [(snapshot_id, s.namespace, s.pod, s.mem_max_gb) for s in snapshot.spikers],
     )
     return snapshot_id
+
+
+def _report_cost(
+    cost: CostBasis, totals: ClusterTotals, namespaces: list[NsDemand]
+) -> None:
+    """Print what the fleet costs and how much of it is held for nothing."""
+    ok(
+        f"{cost.priced_nodes}/{cost.priced_nodes + cost.unpriced_nodes} nodes "
+        f"priced | {cost.node_bill_eur_month:.0f} EUR/month "
+        f"| {cost.eur_per_core_month:.2f} EUR per core"
+    )
+    info(
+        f"     reserved-but-unused CPU ≈ "
+        f"{cost.allocate(totals.cpu_req - totals.cpu_p95)} EUR/month"
+    )
+    unmounted = sum(row.storage_unmounted_gib for row in namespaces)
+    wasted_storage = cost.allocate_storage(unmounted)
+    if wasted_storage is not None:
+        info(f"     unmounted storage {unmounted:.0f} GiB ≈ {wasted_storage} EUR/month")
 
 
 def execute_capacity_ingest(
@@ -474,19 +565,7 @@ def execute_capacity_ingest(
 
     namespaces, cost = collect_cluster_context(namespaces, totals)
     if cost is not None:
-        ok(
-            f"{cost.priced_nodes}/{cost.priced_nodes + cost.unpriced_nodes} nodes "
-            f"priced | {cost.node_bill_eur_month:.0f} EUR/month "
-            f"| {cost.eur_per_core_month:.2f} EUR per core"
-        )
-        info(
-            f"     reserved-but-unused ≈ "
-            f"{cost.allocate(totals.cpu_req - totals.cpu_p95):.0f} EUR/month"
-        )
-    info(
-        f"nodes {totals.nodes:.0f} | CPU req {totals.cpu_req:.1f} "
-        f"p95 {totals.cpu_p95:.1f} (phantom {totals.cpu_req - totals.cpu_p95:.1f})"
-    )
+        _report_cost(cost, totals, namespaces)
 
     banner(4, "Store")
     snapshot_id = _store(
