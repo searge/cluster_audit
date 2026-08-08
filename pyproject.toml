@@ -11,6 +11,7 @@ requires-python = ">=3.13"
 dependencies = [
     "diskcache>=5.6.3",
     "httpx>=0.28.1",
+    "kubernetes>=35.0.0",
     "pandas>=2.3.1",
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.2.1",
@@ -47,13 +48,15 @@ dev = [
     "ty>=0.0.15",
 ]
 # Exploratory only, used from notebooks/ — never imported by src/mks.
+# `kubernetes` moved out of here into the runtime dependencies: the ingest needs
+# node flavours and the Rancher project label, and kube-state-metrics exposes
+# neither, so Prometheus alone cannot answer either question.
 # The old `google` pin was dropped: that PyPI package is an empty namespace
 # stub. The notebooks import `google.colab` (only exists inside the Colab
 # runtime) and `google.auth` (which ships in `google-auth`) — neither ever came
 # from it. Notebooks are Colab-first by design, so nothing is added back here.
 notebooks = [
     "jupyter>=1.1.1",
-    "kubernetes>=35.0.0",
     "plotly>=6.6.0",
 ]
 
@@ -98,6 +101,13 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+
+# The official Kubernetes client ships no py.typed marker and no stubs. Scoped
+# to that package rather than relaxing the setting globally, so everything else
+# stays strictly checked.
+[[tool.mypy.overrides]]
+module = ["kubernetes", "kubernetes.*"]
+ignore_missing_imports = true
 
 [tool.uv]
 package = true

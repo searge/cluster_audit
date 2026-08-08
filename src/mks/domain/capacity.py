@@ -8,6 +8,8 @@ data, no IO.
 from dataclasses import dataclass
 from datetime import datetime
 
+from mks.domain.cost import CostBasis
+
 
 @dataclass(frozen=True)
 class NsDemand:
@@ -19,6 +21,9 @@ class NsDemand:
     cpu_max: float  # cores; burst signal — p95-based quota unsafe when cpu_max >> p95
     mem_req_gb: float
     mem_max_gb: float
+    # Rancher project the namespace belongs to. Only the opaque id is available
+    # from a downstream cluster; None for namespaces Rancher does not manage.
+    project_id: str | None = None
 
     @property
     def cpu_phantom(self) -> float:
@@ -56,6 +61,9 @@ class CapacitySnapshot:
     totals: ClusterTotals
     namespaces: tuple[NsDemand, ...]
     spikers: tuple[MemSpiker, ...]
+    # None when no node flavour could be priced, in which case the snapshot is
+    # stored without euro figures rather than with invented ones.
+    cost: CostBasis | None = None
 
 
 __all__ = ["CapacitySnapshot", "ClusterTotals", "MemSpiker", "NsDemand"]

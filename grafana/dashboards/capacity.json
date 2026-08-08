@@ -71,8 +71,8 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "CPU reserved but never used (cores)",
-      "description": "cpu_req - cpu_p95 at the latest snapshot. This is what a right-sizing pass would return to the cluster.",
+      "title": "Reserved but never used",
+      "description": "Euro per month for CPU that is reserved and never reaches p95. An allocation of the node bill, not an invoice: OVH bills the cluster. Rounded down.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
       "gridPos": {
         "h": 4,
         "w": 8,
@@ -85,8 +85,8 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "decimals": 1,
+          "unit": "currencyEUR",
+          "decimals": 0,
           "color": {
             "mode": "fixed",
             "fixedColor": "#E02F44"
@@ -117,7 +117,7 @@
           "editorMode": "code",
           "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT cpu_phantom_cores FROM cluster_trend ORDER BY taken_at DESC LIMIT 1"
+          "rawSql": "SELECT wasted_eur_month FROM cluster_trend ORDER BY taken_at DESC LIMIT 1"
         }
       ]
     },
@@ -468,6 +468,30 @@
                 "value": 110
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wasted_eur_month"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "EUR / month"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
           }
         ]
       },
@@ -498,7 +522,7 @@
           "editorMode": "code",
           "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT namespace, cpu_req_cores, cpu_p95_cores, cpu_phantom_cores FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) ORDER BY cpu_phantom_cores DESC LIMIT 25"
+          "rawSql": "SELECT namespace, cpu_req_cores, cpu_p95_cores, cpu_phantom_cores, wasted_eur_month FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) ORDER BY cpu_phantom_cores DESC LIMIT 25"
         }
       ]
     },
@@ -1113,6 +1137,167 @@
           "rawQuery": true,
           "format": "table",
           "rawSql": "WITH latest AS (SELECT max(taken_at) AS t FROM namespace_trend), previous AS (SELECT max(taken_at) AS t FROM namespace_trend              WHERE taken_at < (SELECT t FROM latest)) SELECT n.namespace, p.cpu_req_cores AS before_cores, n.cpu_req_cores AS after_cores, n.cpu_req_cores - p.cpu_req_cores AS delta_cores FROM namespace_trend n JOIN namespace_trend p ON p.namespace = n.namespace  AND p.taken_at = (SELECT t FROM previous) WHERE n.taken_at = (SELECT t FROM latest) AND abs(n.cpu_req_cores - p.cpu_req_cores) > 0.05 ORDER BY delta_cores DESC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "Projects by reserved-but-unused CPU",
+      "description": "The same waste grouped by Rancher project instead of namespace. A project has an owner; a namespace does not, which is the whole reason this panel exists. Projects Rancher does not name appear under their id, and namespaces outside any project collect under one bucket so the totals still add up to the cluster. The table shows the twenty largest, so its column does not sum to the cluster figure above; quantile-based totals are not additive across namespaces either.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "namespaces"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Namespaces"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_req_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Reserved"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_p95_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Used (p95)"
+              },
+              {
+                "id": "custom.width",
+                "value": 115
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_phantom_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Unused"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wasted_eur_month"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Wasted / month"
+              },
+              {
+                "id": "custom.width",
+                "value": 160
+              },
+              {
+                "id": "unit",
+                "value": "currencyEUR"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-reds"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Wasted / month",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT project, namespaces, cpu_req_cores, cpu_p95_cores, cpu_phantom_cores, wasted_eur_month FROM project_trend WHERE taken_at = (SELECT max(taken_at) FROM project_trend) ORDER BY wasted_eur_month DESC NULLS LAST LIMIT 20"
         }
       ]
     }

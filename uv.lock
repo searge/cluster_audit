@@ -1000,6 +1000,7 @@ source = { editable = "." }
 dependencies = [
     { name = "diskcache" },
     { name = "httpx" },
+    { name = "kubernetes" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary"] },
     { name = "python-dotenv" },
@@ -1024,7 +1025,6 @@ dev = [
 ]
 notebooks = [
     { name = "jupyter" },
-    { name = "kubernetes" },
     { name = "plotly" },
 ]
 
@@ -1032,6 +1032,7 @@ notebooks = [
 requires-dist = [
     { name = "diskcache", specifier = ">=5.6.3" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "kubernetes", specifier = ">=35.0.0" },
     { name = "ovh", marker = "extra == 'ovh'", specifier = ">=1.2.0" },
     { name = "pandas", specifier = ">=2.3.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
@@ -1053,7 +1054,6 @@ dev = [
 ]
 notebooks = [
     { name = "jupyter", specifier = ">=1.1.1" },
-    { name = "kubernetes", specifier = ">=35.0.0" },
     { name = "plotly", specifier = ">=6.6.0" },
 ]
 
