@@ -377,11 +377,11 @@
     {
       "id": 6,
       "type": "table",
-      "title": "Namespaces by reserved-but-unused CPU (latest snapshot)",
-      "description": "CI namespaces are bursty by nature — read gitlab-runners with that in mind rather than as waste.",
+      "title": "Namespaces by reserved-but-unused CPU",
+      "description": "Reserved is what the workload asked Kubernetes to set aside; used is the 95th percentile of what it actually consumed over the window. The gap is capacity nobody can schedule on. CI namespaces burst by design and kube-system is platform overhead — neither is waste in the same sense.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
       "gridPos": {
         "h": 11,
-        "w": 15,
+        "w": 12,
         "x": 0,
         "y": 13
       },
@@ -406,12 +406,7 @@
               "id": "byName",
               "options": "namespace"
             },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 230
-              }
-            ]
+            "properties": []
           },
           {
             "matcher": {
@@ -422,6 +417,10 @@
               {
                 "id": "displayName",
                 "value": "Reserved"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
@@ -434,6 +433,10 @@
               {
                 "id": "displayName",
                 "value": "Used (p95)"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
@@ -445,7 +448,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Reserved but unused"
+                "value": "Unused"
               },
               {
                 "id": "color",
@@ -459,18 +462,10 @@
                   "type": "color-background",
                   "mode": "gradient"
                 }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "mem_shortfall_gb"
-            },
-            "properties": [
+              },
               {
-                "id": "displayName",
-                "value": "Mem peak − reserved (GiB)"
+                "id": "custom.width",
+                "value": 110
               }
             ]
           }
@@ -488,7 +483,7 @@
         },
         "sortBy": [
           {
-            "displayName": "Reserved but unused",
+            "displayName": "Unused",
             "desc": true
           }
         ]
@@ -503,20 +498,244 @@
           "editorMode": "code",
           "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT namespace, cpu_req_cores, cpu_p95_cores, cpu_phantom_cores, mem_shortfall_gb FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) ORDER BY cpu_phantom_cores DESC LIMIT 25"
+          "rawSql": "SELECT namespace, cpu_req_cores, cpu_p95_cores, cpu_phantom_cores FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) ORDER BY cpu_phantom_cores DESC LIMIT 25"
         }
       ]
     },
     {
       "id": 8,
       "type": "table",
-      "title": "Running with no CPU request",
-      "description": "These namespaces consume CPU while reserving none, so the scheduler treats them as free and packs nodes past capacity. Same failure class as the unlimited Elasticsearch pods behind the MemoryPressure/CSI incidents. A LimitRange defaultRequest backfills exactly this.",
+      "title": "Resources with no requests",
+      "description": "A namespace here declares no request for one resource or the other, so the scheduler treats that resource as free and packs nodes past what they can hold. When a node then runs short the kubelet evicts whatever is handiest, which is rarely the workload at fault. Two incidents on this cluster started this way, both taking the storage driver down with them. These namespaces need requests set, not lowered.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu_p95_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "CPU used (p95)"
+              },
+              {
+                "id": "custom.width",
+                "value": 140
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_max_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Mem peak (GiB)"
+              },
+              {
+                "id": "custom.width",
+                "value": 140
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Mem peak (GiB)",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT namespace, cpu_p95_cores, mem_max_gb FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) AND (cpu_req_cores < 0.05 OR mem_req_gb < 0.05) AND (cpu_p95_cores > 0.1 OR mem_max_gb > 0.1) ORDER BY mem_max_gb DESC LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Namespaces by reserved-but-unused memory",
+      "description": "The memory equivalent: reserved minus the highest the namespace ever reached during the window. A negative value is the opposite problem — it used more than it reserved, which is what causes evictions rather than cost, and is why the list is worth reading from both ends.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
       "gridPos": {
         "h": 11,
-        "w": 9,
-        "x": 15,
+        "w": 12,
+        "x": 12,
         "y": 13
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "namespace"
+            },
+            "properties": []
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_req_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Reserved"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_max_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Peak used"
+              },
+              {
+                "id": "custom.width",
+                "value": 115
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_unused_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Unused"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-reds"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Unused",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT namespace, mem_req_gb, mem_max_gb, mem_req_gb - mem_max_gb AS mem_unused_gb FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) ORDER BY mem_unused_gb DESC LIMIT 25"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Bursty namespaces — safe to cut?",
+      "description": "The counterweight to the tables above. A namespace here looks cheap at p95 but occasionally needs far more, so cutting its request down to p95 would throttle it exactly when it is working hardest. Read this before acting on anything in the reserved-but-unused lists, and treat a high ratio as a reason to size on the peak instead.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
       },
       "datasource": {
         "type": "postgres",
@@ -541,8 +760,12 @@
             },
             "properties": [
               {
+                "id": "displayName",
+                "value": ""
+              },
+              {
                 "id": "custom.width",
-                "value": 230
+                "value": 0
               }
             ]
           },
@@ -554,23 +777,60 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "CPU used (p95)"
+                "value": "Used (p95)"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "mem_max_gb"
+              "options": "cpu_max_cores"
             },
             "properties": [
               {
                 "id": "displayName",
-                "value": "Mem peak (GiB)"
+                "value": "Peak"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "burst_ratio"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Peak / p95"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               },
               {
                 "id": "decimals",
                 "value": 1
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-blues"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
               }
             ]
           }
@@ -588,7 +848,7 @@
         },
         "sortBy": [
           {
-            "displayName": "CPU used (p95)",
+            "displayName": "Peak / p95",
             "desc": true
           }
         ]
@@ -603,7 +863,256 @@
           "editorMode": "code",
           "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT namespace, cpu_p95_cores, mem_max_gb FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) AND cpu_req_cores < 0.05 AND cpu_p95_cores > 0.1 ORDER BY cpu_p95_cores DESC LIMIT 15"
+          "rawSql": "SELECT namespace, cpu_p95_cores, cpu_max_cores, cpu_max_cores / NULLIF(cpu_p95_cores, 0) AS burst_ratio FROM namespace_trend WHERE taken_at = (SELECT max(taken_at) FROM namespace_trend) AND cpu_max_cores > 0.5 AND cpu_p95_cores > 0.01 ORDER BY burst_ratio DESC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Largest pods by peak memory",
+      "description": "The only view here below namespace level. Node memory is exhausted by individual pods, not by averages: both of the eviction incidents on this cluster trace back to one process, not to a namespace being generally large. If a namespace looks surprising in the tables above, its entry here usually explains why.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "namespace"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Namespace"
+              },
+              {
+                "id": "custom.width",
+                "value": 260
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pod"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": ""
+              },
+              {
+                "id": "custom.width",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mem_max_gb"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Peak (GiB)"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-reds"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Peak (GiB)",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT s.namespace, s.pod, s.mem_max_gb FROM mem_spiker s WHERE s.snapshot_id = (SELECT max(id) FROM capacity_snapshot) ORDER BY s.mem_max_gb DESC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Change since the previous snapshot",
+      "description": "Reserved CPU, this snapshot against the one before it. Empty means nothing moved, which is itself the finding: the argument for acting on any of this rests on the numbers staying put week after week. Expect it to stay blank until a few weekly snapshots have accumulated.\n\nFull explanation: apps/platform-capacity/dashboard.md in the ovh-cluster repo.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "capacity-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "namespace"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": ""
+              },
+              {
+                "id": "custom.width",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "before_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Before"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "after_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "After"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "delta_cores"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Change"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Change",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "capacity-pg"
+          },
+          "editorMode": "code",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "WITH latest AS (SELECT max(taken_at) AS t FROM namespace_trend), previous AS (SELECT max(taken_at) AS t FROM namespace_trend              WHERE taken_at < (SELECT t FROM latest)) SELECT n.namespace, p.cpu_req_cores AS before_cores, n.cpu_req_cores AS after_cores, n.cpu_req_cores - p.cpu_req_cores AS delta_cores FROM namespace_trend n JOIN namespace_trend p ON p.namespace = n.namespace  AND p.taken_at = (SELECT t FROM previous) WHERE n.taken_at = (SELECT t FROM latest) AND abs(n.cpu_req_cores - p.cpu_req_cores) > 0.05 ORDER BY delta_cores DESC LIMIT 15"
         }
       ]
     }

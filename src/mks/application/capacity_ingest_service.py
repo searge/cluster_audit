@@ -94,6 +94,19 @@ SELECT taken_at,
        mem_max_gb
 FROM capacity_snapshot;
 """
+# Deliberately no GRANT logic here. The dashboard's read-only role gets its
+# privileges from PostgreSQL's predefined `pg_read_all_data`, granted by CNPG
+# at role creation (`managed.roles[].inRoles` in the cluster manifest), so
+# authorization never depends on this script having run.
+#
+# The tempting alternative — `GRANT SELECT ON ALL TABLES` from here — was built
+# and then removed. It is not merely redundant, it is dangerous: that statement
+# raises on any relation in the schema owned by someone else (a
+# `CREATE EXTENSION` is enough), and because `execute_script` runs this whole
+# DDL in one transaction, the failure rolls back the entire ingest. A cosmetic
+# privilege problem would become a lost week of data that Prometheus can no
+# longer replay. It also made the role undroppable, leaving CNPG's
+# `ensure: absent` stuck in Terminating.
 
 _INSERT_SNAPSHOT = """
 INSERT INTO capacity_snapshot
