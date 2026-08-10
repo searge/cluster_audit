@@ -1,8 +1,38 @@
 """Turning reserved capacity into euros.
 
-OVH bills the cluster, never the namespace, so nothing here measures a cost.
-It allocates one: the node bill divided by the CPU those nodes can hand out,
-applied to what each namespace reserves. Pure arithmetic, no IO.
+OVH bills the cluster, never the namespace, so nothing here measures a cost. It
+prices one: what a reserved core is worth at the rate of the *standing* node
+pool, applied to what each namespace reserves. Pure arithmetic, no IO.
+
+The standing pool is the one with a monthly forfait; a flavour sold only by the
+hour is overflow capacity. That distinction is the whole basis of this module,
+so it is worth stating why. Every long-lived workload is meant to live on the
+standing pool, and 108 pods on this cluster say so with an explicit
+`nodeSelector`. Nothing is pinned to the hourly pool. Pods land there when the
+scheduler cannot fit them anywhere else, which makes that pool a symptom of
+over-reservation rather than a separate kind of capacity: it held ten nodes one
+day and three the next, tracking nothing but how much did not fit.
+
+Blending both pools into one average was the earlier design and it had a defect
+that only showed under movement. The average is weighted by fleet composition,
+so when seven hourly nodes went away the figure moved from 10.36 to 11.64 and
+every namespace's euro column rose by twelve percent on a day none of them had
+changed anything. The number has to answer to tenant behaviour, not to how many
+nodes were running when the snapshot was taken.
+
+Pricing against the standing pool removes that entirely, because the node count
+cancels: fifteen b2-15 nodes cost 15 x 48.05 and carry 15 x 3.830 cores, so the
+rate is 48.05 / 3.830 whether the pool holds fifteen nodes or forty. What is
+left is a property of the flavour. It moves when OVH reprices b2-15, when the
+pool changes flavour, or when a node's allocatable CPU changes because something
+altered the kubelet's reservations, and `allocatable_spread` exists so that last
+one leaves a trace instead of shifting the rate in silence.
+
+The consequence to be honest about: this is a rate, not a share of the invoice.
+Reservations summed at the standing rate can exceed the whole node bill, and on
+this cluster they do, because 81.5 cores are reserved against a standing pool
+that has 57.4. That excess is not an arithmetic error to be normalised away. It
+is the diagnosis, and the overflow pool's bill is what it costs.
 
 Money is `Decimal` throughout and never `float`. Binary floating point cannot
 hold 48.05 or 0.086 exactly, and the error survives into the rounding: `4.35 *
@@ -13,17 +43,14 @@ nothing to show for it. Inputs cross into `Decimal` at the boundary through
 `money()`, which goes via `str` so a price written as 48.05 comes back as
 Decimal("48.05") rather than the float that approximates it.
 
-The divisor is CPU because CPU is what runs out first on this cluster, and the
+CPU is the divisor because CPU is what runs out first on this cluster, and the
 resource that runs out first is the one that triggers the next node purchase.
 `binding_resource` exists to make that assumption checkable rather than
 implicit: when memory overtakes CPU, the basis is wrong and should change.
 
-Two limits worth knowing before quoting anything from here. Hourly pools are
-priced at a full month of hours, so an autoscaled pool that spends part of its
-life scaled down is billed as though it never was; measured against the July
-invoice that overstates the hourly pool by about 12 percent, and the whole node
-bill by 3. And only compute is counted: storage, load balancers and egress sit
-outside this model, which on this cluster is another fifth of the invoice.
+One limit worth knowing before quoting anything from here: only compute is
+counted. Storage is priced separately below, but load balancers and egress sit
+outside this model entirely.
 """
 
 from dataclasses import dataclass
@@ -31,7 +58,10 @@ from decimal import ROUND_FLOOR, Decimal
 from typing import Any
 
 # OVH bills hourly pools by the hour; 730 is the conventional month used in
-# their own estimates, so the two pools stay comparable.
+# their own estimates, so the overflow line stays comparable to the standing
+# one. It overstates a pool that spends part of the month scaled down, which is
+# most of what an overflow pool does — the figure is an upper bound on what not
+# fitting cost, not a reading of the invoice.
 HOURS_PER_MONTH = Decimal(730)
 
 # Enough places to keep a per-core price meaningful for a fleet of any size
@@ -63,6 +93,23 @@ class NodeFlavour:
     hourly_eur: Decimal | None
 
     @property
+    def is_standing(self) -> bool:
+        """Whether this flavour is standing capacity rather than overflow.
+
+        A monthly forfait is the marker. It is a commitment: the node is paid
+        for whether or not anything runs on it, which is what makes it the pool
+        long-lived workloads belong on and the honest rate to price a permanent
+        reservation against. A flavour sold only by the hour is rented for as
+        long as it is needed and released, so its price says what a burst cost,
+        not what a standing core is worth.
+
+        Read from the price file rather than from the pool name, so a pool
+        renamed or a flavour that gains a forfait is picked up without a code
+        change. The file's comments carry the pairing.
+        """
+        return self.monthly_eur is not None
+
+    @property
     def monthly_total_eur(self) -> Decimal | None:
         """Monthly cost for all nodes of this flavour, or None if unpriced.
 
@@ -82,18 +129,26 @@ class NodeFlavour:
 
 
 @dataclass(frozen=True)
-class CostBasis:
+class CostBasis:  # pylint: disable=too-many-instance-attributes
     """What a reserved core costs per month, and whether that is a fair basis."""
 
-    eur_per_core_month: Decimal
-    node_bill_eur_month: Decimal
-    allocatable_cores: Decimal
-    priced_nodes: int
+    eur_per_core_month: Decimal  # the standing rate: standing bill / standing cores
+    node_bill_eur_month: Decimal  # whole priced fleet, for reconciling the invoice
+    standing_cores: Decimal
+    standing_nodes: int
+    standing_bill_eur_month: Decimal
+    overflow_nodes: int
+    overflow_bill_eur_month: Decimal
     unpriced_nodes: int
     binding_resource: str  # "cpu" or "memory": whichever is closer to full
     # Block storage is billed per gigabyte and independently of compute, so it
     # needs no allocation at all: a claim belongs to exactly one namespace.
     eur_per_gib_month: Decimal | None = None
+
+    @property
+    def priced_nodes(self) -> int:
+        """Nodes this basis could put a price on, of either kind."""
+        return self.standing_nodes + self.overflow_nodes
 
     def allocate(self, reserved_cores: float | Decimal) -> Decimal:
         """Cost attributed to a reservation, rounded down to whole euros.
@@ -110,9 +165,9 @@ class CostBasis:
     def allocate_storage(self, gib: float | Decimal) -> Decimal | None:
         """Cost of claimed block storage, rounded down. None when unpriced.
 
-        Not an allocation like the CPU figure: a volume is billed per gigabyte
-        and belongs to one namespace, so this is the closest thing here to an
-        actual cost rather than a share of one.
+        Not a rate like the CPU figure: a volume is billed per gigabyte and
+        belongs to one namespace, so this is the closest thing here to an actual
+        cost rather than a price applied to a reservation.
         """
         if self.eur_per_gib_month is None:
             return None
@@ -126,35 +181,46 @@ def build_cost_basis(
     memory_reserved_ratio: float,
     eur_per_gib_month: Decimal | None = None,
 ) -> CostBasis | None:
-    """Derive the per-core price, or None when nothing can be priced.
+    """Derive the standing per-core rate, or None when nothing can be priced.
 
-    Both the bill and the divisor come from priced nodes only. Dividing a
-    partial bill by the whole fleet's cores would quietly deflate the price of
-    every core: one node of an unlisted flavour would drop every namespace's
-    figure by its share, leaving `unpriced_nodes` as the only trace. Excluding
-    those nodes from both sides keeps the price honest for the part of the fleet
-    that can actually be priced.
+    Both the bill and the divisor come from standing flavours only, so the rate
+    is a property of the flavour rather than of the fleet: adding or removing
+    nodes of that flavour scales the numerator and the denominator together and
+    leaves it unchanged. Overflow nodes are counted and billed, but kept out of
+    the division, because their number tracks how much did not fit and folding
+    that into the rate would move every tenant's figure for reasons no tenant
+    caused.
+
+    Returns None when no flavour carries a monthly forfait. That is a hard stop
+    rather than a quiet fall back to the fleet average: a cluster with no
+    standing pool, or a price file that lost its forfait, is a change worth
+    failing on rather than absorbing into a number nobody would think to check.
     """
-    bill = Decimal(0)
-    priced_cores = Decimal(0)
-    priced = unpriced = 0
+    standing_bill = overflow_bill = standing_cores = Decimal(0)
+    standing = overflow = unpriced = 0
     for flavour in flavours:
         total = flavour.monthly_total_eur
         if total is None:
             unpriced += flavour.count
-            continue
-        bill += total
-        priced_cores += flavour.cores
-        priced += flavour.count
+        elif flavour.is_standing:
+            standing_bill += total
+            standing_cores += flavour.cores
+            standing += flavour.count
+        else:
+            overflow_bill += total
+            overflow += flavour.count
 
-    if priced == 0 or priced_cores <= 0:
+    if standing == 0 or standing_cores <= 0:
         return None
 
     return CostBasis(
-        eur_per_core_month=(bill / priced_cores).quantize(_PRICE_PLACES),
-        node_bill_eur_month=bill,
-        allocatable_cores=priced_cores,
-        priced_nodes=priced,
+        eur_per_core_month=(standing_bill / standing_cores).quantize(_PRICE_PLACES),
+        node_bill_eur_month=standing_bill + overflow_bill,
+        standing_cores=standing_cores,
+        standing_nodes=standing,
+        standing_bill_eur_month=standing_bill,
+        overflow_nodes=overflow,
+        overflow_bill_eur_month=overflow_bill,
         unpriced_nodes=unpriced,
         binding_resource=(
             "cpu" if cpu_reserved_ratio >= memory_reserved_ratio else "memory"
@@ -195,10 +261,39 @@ def flavour_of(node: dict[str, Any], learned: dict[str, str]) -> str | None:
     return learned.get(pool) if isinstance(pool, str) else None
 
 
+def allocatable_spread(
+    nodes: list[dict[str, Any]], learned: dict[str, str]
+) -> dict[str, list[Decimal]]:
+    """Distinct allocatable-core counts seen per flavour, for drift detection.
+
+    The standing rate divides a fixed price by the cores one node of that
+    flavour hands out, so that per-node figure is half the answer and nothing
+    else in the pipeline would notice it changing. All fifteen b2-15 nodes here
+    report exactly 3830m, but allocatable is capacity minus whatever the kubelet
+    and system reserve, and those reservations are configuration: an OVH image
+    change or a Kubernetes upgrade can move them. The rate would shift with no
+    price having changed and no error anywhere.
+
+    Returns every distinct value per flavour so the caller can say something
+    when a flavour reports more than one. Mid-roll a mixed fleet is expected and
+    harmless; the same mixture still there next week is not.
+    """
+    seen: dict[str, set[Decimal]] = {}
+    for node in nodes:
+        name = flavour_of(node, learned)
+        if name is None:
+            continue
+        cores = money(node.get("cpu"))
+        if cores is not None:
+            seen.setdefault(name, set()).add(cores)
+    return {name: sorted(values) for name, values in seen.items()}
+
+
 __all__ = [
     "HOURS_PER_MONTH",
     "CostBasis",
     "NodeFlavour",
+    "allocatable_spread",
     "build_cost_basis",
     "flavour_of",
     "money",

@@ -29,6 +29,7 @@ from mks.domain.capacity import CapacitySnapshot, ClusterTotals, NsDemand
 from mks.domain.cost import (
     CostBasis,
     NodeFlavour,
+    allocatable_spread,
     build_cost_basis,
     flavour_of,
     money,
@@ -108,6 +109,19 @@ ALTER TABLE namespace_demand
 
 ALTER TABLE capacity_snapshot
     ADD COLUMN IF NOT EXISTS eur_per_gib_month numeric(12,4);
+
+-- The standing pool, split out from the overflow one. eur_per_core_month used
+-- to be a fleet-wide average and is now the standing pool's rate; the two are
+-- not comparable, so rows written before this change are recognisable by
+-- standing_nodes being NULL rather than by their date. Nothing backfills them:
+-- the flavour mix at the time was never stored, so any value put there would be
+-- an assumption dressed as history.
+ALTER TABLE capacity_snapshot
+    ADD COLUMN IF NOT EXISTS standing_nodes integer,
+    ADD COLUMN IF NOT EXISTS standing_cores numeric(12,3),
+    ADD COLUMN IF NOT EXISTS standing_bill_eur_month numeric(12,2),
+    ADD COLUMN IF NOT EXISTS overflow_nodes integer,
+    ADD COLUMN IF NOT EXISTS overflow_bill_eur_month numeric(12,2);
 
 -- Rancher project names. A downstream cluster only knows the opaque id, and the
 -- Project objects live in the Rancher management cluster, so this is filled in
@@ -211,6 +225,19 @@ SELECT taken_at,
        unpriced_nodes,
        binding_resource,
        eur_per_gib_month,
+       standing_nodes,
+       standing_cores,
+       standing_bill_eur_month,
+       overflow_nodes,
+       overflow_bill_eur_month,
+       -- What did not fit on the pool it was meant to fit on. Rented by the
+       -- hour and charged here at a full month of them, so it is the ceiling of
+       -- what the overflow cost rather than a reading of the invoice.
+       overflow_bill_eur_month AS overflow_eur_month,
+       -- Reserved against a standing pool that may not be able to hold it. A
+       -- positive number means the reservations only fit because overflow nodes
+       -- are running.
+       cpu_req_cores - standing_cores AS cores_over_standing,
        floor((cpu_req_cores - cpu_p95_cores) * eur_per_core_month) AS wasted_eur_month
 FROM capacity_snapshot;
 """
@@ -233,8 +260,11 @@ INSERT INTO capacity_snapshot
     (cluster, taken_at, window_spec, nodes,
      cpu_req_cores, cpu_p95_cores, mem_req_gb, mem_max_gb,
      eur_per_core_month, node_bill_eur_month,
-     priced_nodes, unpriced_nodes, binding_resource, eur_per_gib_month)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+     priced_nodes, unpriced_nodes, binding_resource, eur_per_gib_month,
+     standing_nodes, standing_cores, standing_bill_eur_month,
+     overflow_nodes, overflow_bill_eur_month)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+        %s, %s, %s, %s, %s)
 ON CONFLICT (cluster, taken_at, window_spec) DO UPDATE SET
     nodes = EXCLUDED.nodes,
     cpu_req_cores = EXCLUDED.cpu_req_cores,
@@ -246,7 +276,12 @@ ON CONFLICT (cluster, taken_at, window_spec) DO UPDATE SET
     priced_nodes = EXCLUDED.priced_nodes,
     unpriced_nodes = EXCLUDED.unpriced_nodes,
     binding_resource = EXCLUDED.binding_resource,
-    eur_per_gib_month = EXCLUDED.eur_per_gib_month
+    eur_per_gib_month = EXCLUDED.eur_per_gib_month,
+    standing_nodes = EXCLUDED.standing_nodes,
+    standing_cores = EXCLUDED.standing_cores,
+    standing_bill_eur_month = EXCLUDED.standing_bill_eur_month,
+    overflow_nodes = EXCLUDED.overflow_nodes,
+    overflow_bill_eur_month = EXCLUDED.overflow_bill_eur_month
 RETURNING id
 """
 
@@ -336,6 +371,18 @@ def _fleet_inventory(nodes: list[dict[str, Any]]) -> list[NodeFlavour]:
     if not prices.flavors:
         warn("no price reference at config/ovh_prices.toml; storing without costs")
     learned = pool_flavours(nodes, frozenset(prices.flavors))
+    # The standing rate is a fixed price divided by the cores one node of that
+    # flavour hands out, so a change in allocatable moves it with no price
+    # having changed. Warned about rather than acted on: during a node roll a
+    # mixed fleet is expected, and the same mixture still here next week is what
+    # actually wants attention.
+    for flavour_name, values in allocatable_spread(nodes, learned).items():
+        if len(values) > 1:
+            seen = ", ".join(f"{v}" for v in values)
+            warn(
+                f"{flavour_name}: nodes disagree on allocatable CPU ({seen}); "
+                f"the per-core rate follows whichever dominates"
+            )
     counts: Counter[str | None] = Counter()
     cores: dict[str | None, Decimal] = {}
     for node in nodes:
@@ -446,7 +493,10 @@ def collect_cluster_context(
         money(load_prices().volume_high_speed_eur_per_gb_month) or None,
     )
     if cost is None:
-        warn("no node flavour matched the price reference; storing without costs")
+        warn(
+            "no standing (monthly-forfait) flavour matched the price reference; "
+            "storing without costs"
+        )
     return enriched, cost
 
 
@@ -482,6 +532,11 @@ def _store_in(
             cost.unpriced_nodes if cost else None,
             cost.binding_resource if cost else None,
             cost.eur_per_gib_month if cost else None,
+            cost.standing_nodes if cost else None,
+            cost.standing_cores if cost else None,
+            cost.standing_bill_eur_month if cost else None,
+            cost.overflow_nodes if cost else None,
+            cost.overflow_bill_eur_month if cost else None,
         ),
     )
     # An upsert alone leaves rows behind for namespaces deleted between runs and
@@ -521,8 +576,28 @@ def _report_cost(
     ok(
         f"{cost.priced_nodes}/{cost.priced_nodes + cost.unpriced_nodes} nodes "
         f"priced | {cost.node_bill_eur_month:.0f} EUR/month "
-        f"| {cost.eur_per_core_month:.2f} EUR per core"
+        f"| {cost.eur_per_core_month:.2f} EUR per standing core"
     )
+    info(
+        f"     standing pool {cost.standing_nodes} nodes, "
+        f"{cost.standing_cores:.1f} cores, "
+        f"{cost.standing_bill_eur_month:.0f} EUR/month"
+    )
+    if cost.overflow_nodes:
+        info(
+            f"     overflow pool {cost.overflow_nodes} nodes ≈ "
+            f"{cost.overflow_bill_eur_month:.0f} EUR/month "
+            f"— what did not fit on it"
+        )
+    # Stated as a comparison rather than a ratio because the interesting case is
+    # the one where it goes negative: reservations exceeding the pool they are
+    # supposed to live on is why the overflow pool exists at all.
+    over = (money(totals.cpu_req) or Decimal(0)) - cost.standing_cores
+    if over > 0:
+        info(
+            f"     reserved {totals.cpu_req:.1f} cores against "
+            f"{cost.standing_cores:.1f} standing (+{over:.1f} over)"
+        )
     info(
         f"     reserved-but-unused CPU ≈ "
         f"{cost.allocate(totals.cpu_req - totals.cpu_p95)} EUR/month"
