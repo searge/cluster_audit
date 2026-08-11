@@ -1,0 +1,101 @@
+---
+# Only what plausibly changes between environments is a value. The
+# reasoning-heavy settings — CNPG memory sizing, backup semantics, the
+# permission model — live in the templates next to the comments that justify
+# them: a value with a paragraph of caveats is a value someone will change
+# without reading the paragraph.
+#
+# Secrets are NOT part of this chart. The consuming repository provides them
+# (sealed, next to the Application that installs this chart) and this chart
+# references them by name below.
+
+image:
+  # registry.smile.fr, not registry.galaxy.intranet: same Harbor, but the
+  # intranet name only resolves on the Galaxy side, and OVH MKS nodes resolve
+  # against public DNS — the intranet record gives ImagePullBackOff there.
+  repository: registry.smile.fr/galaxy/mks-audit
+  # GitLab's CI_COMMIT_SHORT_SHA — EIGHT characters, not git's default seven.
+  # Only commits touching the paths in .python-docker-changes produce an
+  # image, so the newest commit does not necessarily have one; check the
+  # registry before bumping.
+  tag: "latest"
+
+secrets:
+  # CNPG bootstrap + owner role password; also holds the ingest's credential.
+  dbOwner: capacity-db-owner
+  # The read-only role's password; the API and Grafana connect with it.
+  dbReader: capacity-db-reader
+  # Harbor is closed — even the dhi/* mirrors answer 401 anonymously — so
+  # every pod that pulls needs a robot credential.
+  imagePull: harbor-robot
+
+database:
+  # Renaming an existing cluster does NOT rename it: CNPG creates a new empty
+  # cluster with new PVCs while the old one keeps the data. Treat as immutable
+  # once deployed.
+  name: capacity-db
+  # Three instances so a failover still leaves a quorum of data copies; the
+  # cost is ~1.3 EUR/month of storage and ~768Mi of reserved memory.
+  instances: 3
+  # Pinned so the PostgreSQL major version is a property of this repo, not of
+  # whatever the CNPG operator release defaults to.
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.6-standard-bookworm
+  storageSize: 5Gi
+  storageClass: csi-cinder-high-speed
+
+ingest:
+  # Weekly, matching the window so runs tile the timeline with no gaps.
+  schedule: "0 6 * * 1"
+  window: 7d
+  cluster: smile-ovh
+  prometheusUrl: http://rancher-monitoring-prometheus.cattle-monitoring-system.svc:9090
+
+api:
+  enabled: true
+  # Two replicas so a node drain or a rollout does not blank the Forge
+  # capacity card; the pods are stateless and small. A PodDisruptionBudget
+  # (minAvailable 1) ships automatically whenever replicas > 1.
+  replicas: 2
+  port: 8080
+  vpa:
+    # Recommendation only, like every other VPA in this cluster. Compare
+    # `kubectl get vpa -n platform-capacity` against the requests below and
+    # adjust the values, not the updateMode.
+    enabled: true
+    updateMode: "Off"
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+backup:
+  enabled: true
+  # Sunday 03:00, three hours before Monday's ingest, so each backup holds a
+  # complete week. SIX fields: CNPG's cron parser takes seconds first.
+  schedule: "0 0 3 * * 0"
+  prune:
+    # Monday 05:00 UTC — after Sunday's snapshot, before Monday's ingest.
+    schedule: "0 5 * * 1"
+    maxAgeDays: 35
+    # Never deleted regardless of age: if snapshots stop succeeding, an age
+    # cutoff alone would eventually delete the last good backup.
+    keepNewest: 5
+    # `-dev` because the plain DHI kubectl image ships no shell at all, and
+    # the prune pipeline needs date/awk/xargs.
+    kubectlImage: registry.smile.fr/dhi/kubectl:1.34-debian13-dev
+
+networkPolicy:
+  enabled: true
+
+monitoring:
+  # PodMonitor + PrometheusRule; needs the prometheus-operator CRDs.
+  enabled: true
+
+grafana:
+  # The dashboard ConfigMap lands in the namespace Grafana's sidecar watches.
+  # The datasource (a sealed secret carrying the reader password) is
+  # environment-bound and ships with the consuming repository, not here.
+  enabled: true
+  dashboardNamespace: cattle-dashboards

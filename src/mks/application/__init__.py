@@ -2,6 +2,11 @@
 
 from mks.application.billing_export_service import BillingExportParams
 from mks.application.billing_export_use_case import execute_billing_export
+from mks.application.capacity_api_service import (
+    ProjectTrendLatest,
+    latest_for_project,
+    latest_per_project,
+)
 from mks.application.capacity_ingest_use_case import execute_capacity_ingest
 from mks.application.capacity_plan_use_case import execute_capacity_plan
 from mks.application.cluster_inventory_use_case import execute_cluster_inventory
@@ -36,6 +41,9 @@ __all__ = [
     "BillingExportParams",
     "execute_billing_export",
     "execute_capacity_ingest",
+    "latest_for_project",
+    "latest_per_project",
+    "ProjectTrendLatest",
     "execute_capacity_plan",
     "execute_cluster_inventory",
     "execute_dashboard_summary",

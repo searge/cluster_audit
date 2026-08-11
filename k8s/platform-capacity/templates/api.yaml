@@ -1,0 +1,119 @@
+{{- if .Values.api.enabled }}
+---
+# Read-only HTTP face of the trend store, for consumers outside the cluster.
+#
+# Exists because the database is a ClusterIP behind a default-deny
+# NetworkPolicy, and the first outside consumer — Forge — should not speak
+# Postgres to it: a JDBC datasource would put the reader password in a third
+# place that the rotation script does not know about. Over HTTP the password
+# stays in this namespace, and Forge reaches the Service through the Rancher
+# API-server proxy with credentials it already holds — no new secret anywhere.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capacity-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      {{- include "platform-capacity.apiSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform-capacity.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+    spec:
+      imagePullSecrets:
+      - name: {{ .Values.secrets.imagePull }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      # Soft, unlike the database's required anti-affinity: two API replicas
+      # on one node is degraded, two database replicas on one node is not HA
+      # at all.
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            {{- include "platform-capacity.apiSelector" . | nindent 12 }}
+      containers:
+      - name: api
+        image: {{ include "platform-capacity.image" . }}
+        args:
+        - capacity-api
+        - --port
+        - {{ .Values.api.port | quote }}
+        env:
+        # Reader credentials, never the owner's: this process must not be able
+        # to write even if its code is wrong.
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.secrets.dbReader }}
+              key: password
+        # -r, not -ro: -ro excludes the primary, so with both replicas down
+        # reads would fail while a healthy primary sat idle. Reads from the
+        # primary are fine for one Forge page view and one weekly pass.
+        #
+        # sslmode=require for the same reason as the ingest: libpq's default
+        # `prefer` silently falls back to cleartext.
+        - name: DATABASE_URL
+          value: postgresql://capacity_ro:$(DB_PASSWORD)@{{ .Values.database.name }}-r.{{ .Release.Namespace }}.svc:5432/capacity?sslmode=require
+        ports:
+        - name: http
+          containerPort: {{ .Values.api.port }}
+        # Both probes hit /healthz, which deliberately does not touch the
+        # database: it answers "is the process up". A database outage makes
+        # the API answer 503 per request — the designed degradation — and
+        # restarting pods during a CNPG failover would only add churn.
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          {{- toYaml .Values.api.resources | nindent 10 }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: capacity-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  selector:
+    {{- include "platform-capacity.apiSelector" . | nindent 4 }}
+  ports:
+  - name: http
+    port: {{ .Values.api.port }}
+    targetPort: http
+{{- end }}

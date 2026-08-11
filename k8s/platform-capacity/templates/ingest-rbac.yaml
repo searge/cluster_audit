@@ -1,0 +1,58 @@
+---
+# The ingest needs two pieces of object metadata that Prometheus cannot supply.
+#
+# Node flavours decide what a reserved core costs. The Rancher project label
+# decides who a reservation belongs to. PersistentVolumeClaims are billed from
+# the moment they are Bound, and pods say which of those claims anything
+# actually mounts. None of it reaches Prometheus: kube-state-metrics runs here
+# without label or annotation metrics, and no metric distinguishes a volume
+# that is paid for from one that is used.
+#
+# Read-only and cluster-scoped: nodes are cluster-scoped, and the namespace,
+# claim and pod lists all have to span the cluster rather than one namespace.
+# `list` only, since every call is a list_*_for_all_namespaces, and no `watch`
+# because the job runs once a week and exits.
+#
+# Keep this in step with kube_client.py. A missing resource here does not fail
+# loudly: the ingest treats an API error as "carry on without cost data", so
+# adding a read to the code without adding it here silently drops every euro
+# figure from the snapshot, storage and compute alike.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capacity-ingest
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+# The pod that needs the token opts in explicitly; anything else naming this
+# account does not inherit cluster-wide read by accident.
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-capacity-ingest
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "namespaces", "persistentvolumeclaims", "pods"]
+  verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-capacity-ingest
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-capacity-ingest
+subjects:
+- kind: ServiceAccount
+  name: capacity-ingest
+  namespace: {{ .Release.Namespace }}

@@ -1,0 +1,26 @@
+platform-capacity {{ .Chart.Version }} deployed to {{ .Release.Namespace }}.
+
+This chart does not create secrets. Three must exist in {{ .Release.Namespace }}
+before anything becomes healthy:
+
+  {{ .Values.secrets.dbOwner }}    basic-auth: the owner role (bootstrap + ingest)
+  {{ .Values.secrets.dbReader }}   basic-auth: the read-only role (API + Grafana)
+  {{ .Values.secrets.imagePull }}  dockerconfigjson: Harbor robot for {{ .Values.image.repository }}
+
+{{- if .Values.api.enabled }}
+
+The API answers inside the cluster at:
+  http://capacity-api.{{ .Release.Namespace }}.svc:{{ .Values.api.port }}/healthz
+
+and through the Rancher service proxy (any account allowed services/proxy):
+  {{ "{rancher}" }}/k8s/clusters/{{ "{cluster}" }}/api/v1/namespaces/{{ .Release.Namespace }}/services/http:capacity-api:{{ .Values.api.port }}/proxy/v1/projects/latest
+{{- end }}
+
+{{- if .Values.grafana.enabled }}
+
+The Grafana *datasource* is provisioned by an init container, once, at Grafana
+pod start — unlike the dashboard, which a sidecar picks up live. After first
+install and after every credential rotation:
+
+  kubectl -n cattle-monitoring-system rollout restart deploy rancher-monitoring-grafana
+{{- end }}

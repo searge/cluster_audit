@@ -1,0 +1,42 @@
+{{- if and .Values.api.enabled .Values.api.vpa.enabled }}
+---
+# Recommendation only (`Off`), matching how every other VPA in this cluster
+# runs: the recommender fills status.recommendation and `kubectl get vpa`
+# shows what the API actually needs, without the updater evicting pods over a
+# service this small. If the recommendations settle far from the requests in
+# values.yaml, change the values — that keeps git as the source of truth for
+# what the pods ask for.
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: capacity-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: capacity-api
+  updatePolicy:
+    updateMode: {{ .Values.api.vpa.updateMode | quote }}
+{{- end }}
+{{- if and .Values.api.enabled (gt (int .Values.api.replicas) 1) }}
+---
+# With one replica a PDB would only block node drains, so it exists solely
+# when there is a second pod to keep.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: capacity-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "platform-capacity.apiSelector" . | nindent 6 }}
+{{- end }}
