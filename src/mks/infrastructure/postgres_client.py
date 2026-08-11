@@ -100,6 +100,23 @@ class PostgresClient:
             raise PostgresError(f"query failed: {exc}") from exc
         return row[0] if row else None
 
+    def query(
+        self, statement: LiteralString, params: Sequence[Any] = ()
+    ) -> list[tuple[Any, ...]]:
+        """Run a parameterized SELECT and return every row.
+
+        The read side of this client, added for the capacity API. Result sets
+        here are one row per Rancher project at most, so fetching everything is
+        the honest interface — a cursor kept open across requests would only
+        pin a connection this serving path does not need.
+        """
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(statement, params)
+                return cur.fetchall()
+        except psycopg.Error as exc:
+            raise PostgresError(f"query failed: {exc}") from exc
+
 
 class PostgresTransaction:
     """Statements inside an open transaction. Same shape as the client's own."""

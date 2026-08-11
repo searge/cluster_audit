@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 # `rancher_users_export_service` — do not "clean it up".
 dependencies = [
     "diskcache>=5.6.3",
+    "fastapi>=0.115",
     "httpx>=0.28.1",
     "kubernetes>=35.0.0",
     "pandas>=2.3.1",
@@ -17,6 +18,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "rich>=14.3.2",
     "typer>=0.23.0",
+    "uvicorn>=0.34",
 ]
 
 [build-system]

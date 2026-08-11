@@ -4,8 +4,10 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 
 import typer
+import uvicorn
 from rich.console import Console
 
+from mks.api import create_app
 from mks.application import (
     BillingExportParams,
     execute_billing_export,
@@ -29,6 +31,7 @@ from mks.application import (
     execute_waste_scan,
     execute_workload_efficiency_audit,
 )
+from mks.config import load_config
 
 app = typer.Typer(
     name="mks",
@@ -678,6 +681,33 @@ def capacity_ingest_command(
             console.print(f"[green]Snapshot:[/green] #{snapshot_id}")
     except (ValueError, RuntimeError) as exc:  # pragma: no cover
         _handle_error(exc)
+
+
+@app.command("capacity-api")
+def capacity_api_command(
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        help="Postgres DSN for the trend store. Defaults to DATABASE_URL.",
+    ),
+    host: str = typer.Option(
+        "0.0.0.0",  # noqa: S104 — pod-facing server; the Service is the boundary
+        "--host",
+        help="Bind address.",
+    ),
+    port: int = typer.Option(8080, "--port", help="Bind port."),
+) -> None:
+    """Serve the latest project_trend rows over HTTP (read-only).
+
+    Runs in the cluster next to the trend store; consumers outside it — Forge —
+    reach it through the Rancher API-server service proxy instead of speaking
+    Postgres across the cluster boundary.
+    """
+    dsn = database_url or load_config().database_url
+    if not dsn:
+        console.print("[red]DATABASE_URL not set — nothing to serve.[/red]")
+        raise typer.Exit(code=2)
+    uvicorn.run(create_app(dsn), host=host, port=port, log_level="info")
 
 
 def main() -> None:
