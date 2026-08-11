@@ -1,6 +1,6 @@
 {{- if .Values.grafana.enabled }}
 ---
-# Built from the dashboard JSON itself (charts/platform-capacity/dashboards/),
+# Built from the dashboard JSON itself (k8s/platform-capacity/dashboards/),
 # so what is committed is the file you actually edit. A pytest in this repo
 # asserts it stays identical to grafana/dashboards/capacity.json, which the
 # local docker-compose Grafana provisions from — one dashboard, two consumers,

@@ -26,6 +26,10 @@ default:
   - src/**/*
   - config/**/*
 
+.chart-changes: &chart_changes
+  - k8s/**/*
+  - scripts/ci/chart.sh
+
 variables:
   HARBOR_REGISTRY: registry.galaxy.intranet
   IMAGE_NAME: ${HARBOR_REGISTRY}/galaxy/mks-audit
@@ -64,6 +68,40 @@ test:gate:
     - when: never
   script:
     - scripts/ci/gate.sh
+
+########################################################################
+# Helm chart
+########################################################################
+
+test:chart:
+  stage: test
+  image: docker.io/alpine/helm:3.19.0
+  interruptible: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        paths: *chart_changes
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        paths: *chart_changes
+    - when: never
+  script:
+    - scripts/ci/chart.sh
+
+# Chart versions come from Chart.yaml, not from the pipeline: Argo CD pins a
+# chart version, so a push that nobody bumped overwrites the pinned artifact
+# in place. Bump `version:` with anything a consumer must notice.
+build:chart:
+  stage: build
+  image: docker.io/alpine/helm:3.19.0
+  needs: [test:chart]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      changes:
+        paths: *chart_changes
+    - when: never
+  script:
+    - scripts/ci/chart.sh push
 
 ########################################################################
 # Docker

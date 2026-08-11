@@ -18,7 +18,7 @@ image:
   # Only commits touching the paths in .python-docker-changes produce an
   # image, so the newest commit does not necessarily have one; check the
   # registry before bumping.
-  tag: "05d9db84"
+  tag: "latest"
 
 secrets:
   # CNPG bootstrap + owner role password; also holds the ingest's credential.
@@ -53,9 +53,16 @@ ingest:
 api:
   enabled: true
   # Two replicas so a node drain or a rollout does not blank the Forge
-  # capacity card; the pods are stateless and small.
+  # capacity card; the pods are stateless and small. A PodDisruptionBudget
+  # (minAvailable 1) ships automatically whenever replicas > 1.
   replicas: 2
   port: 8080
+  vpa:
+    # Recommendation only, like every other VPA in this cluster. Compare
+    # `kubectl get vpa -n platform-capacity` against the requests below and
+    # adjust the values, not the updateMode.
+    enabled: true
+    updateMode: "Off"
   resources:
     requests:
       cpu: 25m

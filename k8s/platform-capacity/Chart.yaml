@@ -9,7 +9,7 @@ version: 1.0.0
 # The mks-audit image tag this chart was last verified against; the deployed
 # tag is .Values.image.tag.
 appVersion: "05d9db84"
-kubeVersion: ">=1.28.0-0"
+kubeVersion: ">=1.34.0-0"
 sources:
   - https://github.com/searge/cluster_audit
 maintainers:
