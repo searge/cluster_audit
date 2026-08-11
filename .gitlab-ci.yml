@@ -75,7 +75,12 @@ test:gate:
 
 test:chart:
   stage: test
-  image: docker.io/alpine/helm:3.19.0
+  # entrypoint overridden for the same reason build:image does it: the image's
+  # own entrypoint is `helm`, and the runner would hand it the job script as
+  # arguments ('unknown command "sh" for "helm"').
+  image:
+    name: docker.io/alpine/helm:3.19.0
+    entrypoint: [""]
   interruptible: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -93,7 +98,9 @@ test:chart:
 # in place. Bump `version:` with anything a consumer must notice.
 build:chart:
   stage: build
-  image: docker.io/alpine/helm:3.19.0
+  image:
+    name: docker.io/alpine/helm:3.19.0
+    entrypoint: [""]
   needs: [test:chart]
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
