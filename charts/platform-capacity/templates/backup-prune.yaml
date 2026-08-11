@@ -1,0 +1,145 @@
+{{- if .Values.backup.enabled }}
+---
+# Backup retention.
+#
+# CNPG prunes nothing for volume-snapshot backups — `spec.backup.retentionPolicy`
+# is barman-cloud only — so without this, weekly snapshots accumulate for the
+# life of the cluster and every one of them is billed.
+#
+# Deleting the Backup object is enough ONLY because database.yaml sets
+# `snapshotOwnerReference: backup`; CNPG's default is to keep the VolumeSnapshot
+# after its Backup is gone. If that setting is ever removed, this job silently
+# becomes a snapshot-orphaning machine.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capacity-backup-prune
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: capacity-backup-prune
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+rules:
+- apiGroups: ["postgresql.cnpg.io"]
+  resources: ["backups"]
+  verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: capacity-backup-prune
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: capacity-backup-prune
+subjects:
+- kind: ServiceAccount
+  name: capacity-backup-prune
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: capacity-backup-prune
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.prune.schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: capacity-backup-prune
+          imagePullSecrets:
+          - name: {{ .Values.secrets.imagePull }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: prune
+            image: {{ .Values.backup.prune.kubectlImage }}
+            command:
+            - /bin/bash
+            - -c
+            # The cutoff is formatted to match creationTimestamp exactly
+            # (RFC3339, second precision, `Z`). `date -Ins` prints `+00:00`
+            # and a locale-dependent decimal comma, so the string comparison
+            # below would then be sorting two different formats against each
+            # other and only working by accident.
+            #
+            # pipefail is load-bearing: without it a failing `kubectl get`
+            # prints to stderr, awk sees nothing, xargs --no-run-if-empty does
+            # nothing, and the pipeline exits 0. The Job would be marked
+            # Succeeded while snapshots accumulated forever, with no alert.
+            #
+            # `tail -n +N` is the safety floor: age alone is not a safe rule.
+            # If the weekly snapshot ever stops succeeding — a Cinder quota, a
+            # missing snapshot class, a timeout — the age cutoff keeps firing
+            # and would eventually delete the last good backup, leaving zero.
+            # The newest keepNewest are always kept regardless of age.
+            #
+            # jsonpath, not the go-template the kustomize original used:
+            # jsonpath brackets its ranges in single braces, so the expression
+            # survives Helm rendering without a thicket of escapes. Same
+            # output, same sort keys.
+            - >-
+              set -euo pipefail;
+              CUTOFF=$(date -u -d 'now-{{ .Values.backup.prune.maxAgeDays }} days' +%Y-%m-%dT%H:%M:%SZ);
+              echo "deleting backups created before $CUTOFF, always keeping the {{ .Values.backup.prune.keepNewest }} newest";
+              kubectl get backups.postgresql.cnpg.io
+              -n {{ .Release.Namespace }} -o jsonpath
+              --template '{range .items[*]}{.metadata.name} {.metadata.creationTimestamp}{"\n"}{end}'
+              | sort -k2r
+              | tail -n +{{ add .Values.backup.prune.keepNewest 1 }}
+              | awk -v cutoff="$CUTOFF" '$2 < cutoff { print $1 }'
+              | xargs --no-run-if-empty kubectl delete
+              backups.postgresql.cnpg.io -n {{ .Release.Namespace }}
+            # kubectl writes a discovery cache under $HOME; with a read-only
+            # root and no writable HOME it still works but warns on every
+            # call, which is noise that reads like a failure in the job log.
+            env:
+            - name: HOME
+              value: /tmp
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 64Mi
+              limits:
+                memory: 128Mi
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir: {}
+{{- end }}

@@ -1,0 +1,110 @@
+{{- if .Values.monitoring.enabled }}
+---
+# Declared here rather than via `spec.monitoring.enablePodMonitor`, which CNPG
+# 1.28 deprecates in favour of managing the resource yourself.
+#
+# The Prometheus here selects PodMonitors with an empty selector across all
+# namespaces, so the object is scraped as soon as it exists — nothing to wire.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Values.database.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/part-of: platform-capacity
+spec:
+  selector:
+    matchLabels:
+      cnpg.io/cluster: {{ .Values.database.name }}
+  podMetricsEndpoints:
+  - port: metrics
+---
+# A weekly job that quietly stops working is the whole failure mode here: the
+# dashboard keeps showing the last snapshot and looks fine, while the trend
+# silently stops growing. These alerts exist to make that visible.
+#
+# Both job expressions use metrics confirmed present in this cluster's
+# Prometheus (kube-state-metrics).
+#
+# Honest caveat: cattle-monitoring-system has Alertmanager but no
+# AlertmanagerConfig, so nothing is routed anywhere yet. These show up in the
+# Prometheus/Rancher UI and become real notifications the day a receiver is
+# wired.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: capacity-ingest
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/part-of: platform-capacity
+spec:
+  groups:
+  - name: platform-capacity
+    rules:
+    - alert: CapacityJobFailed
+      # Namespace-wide on purpose — it covers the prune job too, which nothing
+      # else watches. The summary therefore must not claim it was the ingest.
+      #
+      # Caveat when acting on it: kube_job_failed stays 1 while the failed Job
+      # object exists, and failedJobsHistoryLimit keeps it. A successful
+      # manual re-run does NOT clear this alert; delete the failed Job to do
+      # that.
+      expr: kube_job_failed{namespace="{{ .Release.Namespace }}"} > 0
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: A platform-capacity job failed
+        description: >-
+          Job {{ `{{ $labels.job_name }}` }} failed. The trend store has no row
+          for this week; Prometheus only keeps 15 days, so the gap is permanent
+          unless the job is re-run within that window.
+
+    - alert: CapacityIngestStale
+      # Ten days, not fourteen. A missed week is recoverable — the ingest can
+      # be re-run by hand and will still find the data, but only while
+      # Prometheus still has it, and its retention is 15 days. Alerting at
+      # fourteen would land with a day to spare; ten leaves room to act.
+      #
+      # job_name matters: capacity-backup-prune also runs weekly and also
+      # completes successfully in this namespace, so an unfiltered max() over
+      # the namespace would be reset by the prune job every Monday and this
+      # alert could never fire — the one failure it exists to catch.
+      expr: >-
+        time() - max(kube_job_status_completion_time{
+          namespace="{{ .Release.Namespace }}", job_name=~"capacity-ingest.*"})
+        > 864000
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: No successful capacity ingest for ten days
+        description: >-
+          The dashboard still renders the last snapshot, so this does not look
+          broken from the outside. Check the CronJob and the database.
+
+    - alert: CapacityBackupStale
+      # The `or absent(...)` half is the point: this metric only exists once
+      # the PodMonitor this chart ships is actually being scraped. If the name
+      # is wrong, or scraping never starts, a plain threshold would sit
+      # silently true-less forever and look like healthy backups. absent()
+      # turns that into a firing alert instead of a blind spot.
+      expr: >-
+        (time() - max(cnpg_collector_last_available_backup_timestamp{
+          namespace="{{ .Release.Namespace }}"}) > 1209600)
+        or absent(cnpg_collector_last_available_backup_timestamp{
+          namespace="{{ .Release.Namespace }}"})
+      for: 6h
+      labels:
+        severity: warning
+      annotations:
+        summary: No recent capacity-db backup
+        description: >-
+          Either the weekly volume snapshot stopped succeeding, or CNPG
+          metrics are not being scraped at all. The prune CronJob keeps the
+          {{ .Values.backup.prune.keepNewest }} newest backups regardless of
+          age, so this is a warning rather than data loss — but it is the
+          state that precedes it.
+{{- end }}

@@ -1,0 +1,27 @@
+{{- if .Values.grafana.enabled }}
+---
+# Built from the dashboard JSON itself (charts/platform-capacity/dashboards/),
+# so what is committed is the file you actually edit. A pytest in this repo
+# asserts it stays identical to grafana/dashboards/capacity.json, which the
+# local docker-compose Grafana provisions from — one dashboard, two consumers,
+# no silent drift.
+#
+# Stable name (no hash suffix): the Grafana sidecar WATCHes this namespace, so
+# an update to the same ConfigMap is picked up as a MODIFY event and there is
+# nothing to gain from churning the name.
+#
+# .Files.Get is not template-rendered, which matters: Grafana legend templates
+# use the same double-brace syntax as Helm, and rendering them would eat every
+# legend.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mks-capacity-dashboard
+  namespace: {{ .Values.grafana.dashboardNamespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  capacity.json: |-
+{{ .Files.Get "dashboards/capacity.json" | indent 4 }}
+{{- end }}

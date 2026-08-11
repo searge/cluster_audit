@@ -1,0 +1,16 @@
+---
+apiVersion: v2
+name: platform-capacity
+description: >-
+  Capacity trend store: a CNPG Postgres, the weekly ingest that fills it, the
+  read-only HTTP API that serves it, and the Grafana objects that render it.
+type: application
+version: 1.0.0
+# The mks-audit image tag this chart was last verified against; the deployed
+# tag is .Values.image.tag.
+appVersion: "05d9db84"
+kubeVersion: ">=1.28.0-0"
+sources:
+  - https://github.com/searge/cluster_audit
+maintainers:
+  - name: Serhii Boremchuk

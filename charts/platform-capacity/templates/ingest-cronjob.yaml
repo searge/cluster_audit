@@ -1,0 +1,123 @@
+---
+# Weekly capacity snapshot into Postgres.
+#
+# Window matches the schedule, so runs tile the timeline with no gaps.
+# Requests and usage are both measured over that same window: an instant
+# reading of requests only sees pods that exist at that second, which made CI
+# namespaces report zero reserved CPU against a week of measured usage.
+#
+# Read-only against Prometheus, the Kubernetes API and its own database, in
+# the sense that it only ever writes to Postgres. The Kubernetes access is a
+# cluster-scoped list on a few resources; everything it reads there is
+# metadata Prometheus does not carry (see ingest-rbac.yaml).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: capacity-ingest
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  schedule: {{ .Values.ingest.schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: capacity-ingest
+          automountServiceAccountToken: true
+          imagePullSecrets:
+          - name: {{ .Values.secrets.imagePull }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          # A switchover, or the primary being updated last during a rolling
+          # minor-version upgrade, leaves the write endpoint unavailable for a
+          # few seconds. Without this the job would spend its retries in that
+          # window and then wait a week for the next schedule.
+          initContainers:
+          - name: wait-for-db
+            image: {{ include "platform-capacity.image" . }}
+            command:
+            - /app/.venv/bin/python3
+            - -c
+            - |
+              import socket, sys, time
+              deadline = time.monotonic() + 300
+              while time.monotonic() < deadline:
+                  try:
+                      with socket.create_connection(
+                          ("{{ .Values.database.name }}-rw.{{ .Release.Namespace }}.svc", 5432), timeout=5
+                      ):
+                          print("database reachable")
+                          sys.exit(0)
+                  except OSError as exc:
+                      print(f"waiting for database: {exc}")
+                      time.sleep(5)
+              sys.exit("database not reachable within 300s")
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                memory: 64Mi
+          containers:
+          - name: ingest
+            image: {{ include "platform-capacity.image" . }}
+            args:
+            - capacity-ingest
+            - --window
+            - {{ .Values.ingest.window | quote }}
+            - --cluster
+            - {{ .Values.ingest.cluster | quote }}
+            env:
+            - name: PROMETHEUS_URL
+              value: {{ .Values.ingest.prometheusUrl }}
+            # Kubernetes expands $(VAR) from an earlier entry, so the DSN is
+            # assembled here instead of duplicating the password into a second
+            # secret. The password is generated URL-safe for this reason.
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.dbOwner }}
+                  key: password
+            # sslmode=require, not the libpq default of `prefer`: prefer is
+            # opportunistic and silently falls back to cleartext if the TLS
+            # handshake fails, which would send this password unencrypted
+            # without anything reporting it. CNPG serves TLS by default.
+            - name: DATABASE_URL
+              value: postgresql://capacity:$(DB_PASSWORD)@{{ .Values.database.name }}-rw.{{ .Release.Namespace }}.svc:5432/capacity?sslmode=require
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              # No CPU limit on purpose — a CPU limit only buys throttling here.
+              requests:
+                cpu: 100m
+                memory: 192Mi
+              limits:
+                memory: 512Mi
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir: {}

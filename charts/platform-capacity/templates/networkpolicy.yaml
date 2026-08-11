@@ -1,0 +1,107 @@
+{{- if .Values.networkPolicy.enabled }}
+---
+# The CNI here is Canal, so NetworkPolicy is actually enforced — on a cluster
+# without an enforcing CNI these objects would be decorative.
+#
+# If anything in this namespace behaves strangely after a deploy, this file is
+# the first thing to remove: a wrong allow-list here looks exactly like a
+# broken database. Everything else in the chart is independent of it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# Postgres replication between instances, the ingest CronJob reaching the
+# primary, and the API pods reaching the read service all live inside this
+# namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: {}
+---
+# Two outside callers of the database, and only two:
+#   cnpg-system              the operator, which drives failover and backups
+#                            over the instance manager on 8000
+#   cattle-monitoring-system Prometheus scraping 9187, and Grafana querying 5432
+#
+# Cutting off cnpg-system would leave the cluster running but unmanageable —
+# no failover, no backup — which is why the operator is listed explicitly
+# rather than left to a broad rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-operator-and-monitoring
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: {{ .Values.database.name }}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: cnpg-system
+    ports:
+    - protocol: TCP
+      port: 8000
+    - protocol: TCP
+      port: 5432
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: cattle-monitoring-system
+    ports:
+    - protocol: TCP
+      port: 9187
+    - protocol: TCP
+      port: 5432
+{{- if .Values.api.enabled }}
+---
+# The API's callers arrive through the Kubernetes API server: Forge uses the
+# Rancher service proxy, and on OVH MKS that traffic enters the pod network
+# through the konnectivity agents in kube-system. Without this rule the
+# default-deny above silently eats exactly the path the API exists to serve.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver-to-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "platform-capacity.apiSelector" . | nindent 6 }}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: TCP
+      port: {{ .Values.api.port }}
+{{- end }}
+{{- end }}

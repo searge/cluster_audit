@@ -1,0 +1,173 @@
+---
+# Trend store. Small by nature — ~100 namespaces x one row a week is a few MB a
+# year — but the data is *not* reproducible: Prometheus keeps 15 days, so every
+# snapshot older than that exists only here. That is why this carries backups,
+# not just replicas: HA covers a lost node, it does nothing for a bad DELETE.
+#
+# storageClass is named explicitly rather than left to the cluster default. The
+# default annotation can move; a database should not follow it silently.
+# Not `nfs`: Postgres needs POSIX fsync and locking semantics, and NFS is a
+# well-known way to corrupt a cluster.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.database.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+  annotations:
+    # The PVCs are owned by this Cluster, and the data in them cannot be
+    # rebuilt — Prometheus only keeps 15 days. Deleting the Argo Application,
+    # or dropping this template from the chart, would otherwise take the
+    # database and every volume with it in one pass, with no confirmation.
+    # Removing it on purpose needs a deliberate `kubectl delete cluster`.
+    argocd.argoproj.io/sync-options: Delete=false,Prune=false
+spec:
+  instances: {{ .Values.database.instances }}
+  imagePullPolicy: IfNotPresent
+
+  imageName: {{ .Values.database.imageName }}
+
+  # Automatic minor-version upgrades, primary last and via switchover rather
+  # than a restart, so the read endpoint keeps answering.
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: switchover
+
+  # Nothing needs the postgres superuser: the ingest owns its schema, and the
+  # API and Grafana only read. Leaving it disabled removes a credential that
+  # would otherwise need rotating.
+  enableSuperuserAccess: false
+
+  storage:
+    size: {{ .Values.database.storageSize }}
+    storageClass: {{ .Values.database.storageClass }}
+
+  # `required`, not preferred: replicas on the same node are not replicas.
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+
+  bootstrap:
+    initdb:
+      database: capacity
+      owner: capacity
+      # Credentials come from a sealed secret provided by the consuming
+      # repository rather than CNPG's generated one: Grafana needs the same
+      # password inside its provisioning file, and a value generated at deploy
+      # time cannot be committed.
+      secret:
+        name: {{ .Values.secrets.dbOwner }}
+
+  # Rotation depends on this block, not on the bootstrap secret above.
+  # `bootstrap.initdb.secret` is read exactly once, when the cluster is first
+  # created — editing it later changes nothing in Postgres. A rotation would
+  # then look applied in git while the database kept the old password and the
+  # ingest quietly lost access, which is worse than not rotating at all.
+  # Managed roles are reconciled on every pass, so updating the sealed secret
+  # is what actually changes the credential.
+  managed:
+    roles:
+    - name: capacity
+      ensure: present
+      login: true
+      superuser: false
+      passwordSecret:
+        name: {{ .Values.secrets.dbOwner }}
+
+    # Grafana and the capacity API connect as this, not as the owner. Pointing
+    # readers at the -r/-ro services already made writes fail, but that is a
+    # routing guard: one character in a URL undoes it. This is the permission
+    # model.
+    #
+    # `pg_read_all_data` is a PostgreSQL predefined role, granted by the
+    # operator as superuser when the role is created — so the privileges exist
+    # the moment the role does, with no dependency on the weekly ingest having
+    # run, and they cover tables and views added later.
+    #
+    # The obvious alternative, having the ingest issue GRANT SELECT, was tried
+    # and rejected: `GRANT ... ON ALL TABLES` raises on any relation owned by
+    # another role and would roll back the whole schema transaction, and the
+    # resulting grants make the role undroppable — `ensure: absent` would hang
+    # in Terminating forever. Verified both on PostgreSQL 17.
+    #
+    # Honest caveat: pg_read_all_data is instance-wide, not schema-scoped. This
+    # cluster serves one application database and has enableSuperuserAccess
+    # off, so there is nothing else for it to read.
+    - name: capacity_ro
+      ensure: present
+      login: true
+      superuser: false
+      inRoles:
+      - pg_read_all_data
+      passwordSecret:
+        name: {{ .Values.secrets.dbReader }}
+
+{{- if .Values.backup.enabled }}
+  # Volume snapshots rather than an object store: MinIO only exposes root
+  # credentials here, and handing those to a backup job would trade a database
+  # risk for a cluster-wide one. The Cinder CSI driver snapshots natively, so
+  # this needs no new credential and no bucket.
+  #
+  # These are consistent restore points, not PITR. For a store written once a
+  # week that is the right trade; if PITR is ever wanted, that is when an
+  # object store becomes worth its credentials.
+  #
+  # No `retentionPolicy` here on purpose: CNPG only applies it to the in-tree
+  # barman-cloud path and silently ignores it for volume snapshots, so setting
+  # it would read as "backups are pruned" while they accumulated forever.
+  # Pruning is done explicitly by the backup-prune CronJob instead.
+  backup:
+    volumeSnapshot:
+      className: csi-cinder-snapclass-in-use-v1
+      # Without this CNPG retains VolumeSnapshots after their Backup is deleted
+      # ("By default, VolumeSnapshot objects created by CloudNativePG are
+      # retained after deleting the Backup object that originated them").
+      # The prune CronJob deletes Backups, so the default would orphan every
+      # snapshot — still billed by Cinder — while destroying the index needed
+      # to find them again. `backup` makes the Backup own its snapshot, so
+      # deleting one removes both.
+      snapshotOwnerReference: backup
+      # Cold, not online. An online snapshot needs the WALs written during the
+      # backup, and CNPG's own guidance without a WAL archive is to "rely on
+      # cold backups for that purpose". With three instances the operator
+      # fences one standby for the few seconds the snapshot takes: the primary
+      # is untouched, the read endpoint keeps two members, and the restore
+      # point is consistent by construction rather than by argument.
+      online: false
+{{- end }}
+
+  # 512Mi, not 256Mi. Before a single query runs this container holds the
+  # instance manager (~40-70Mi), shared memory sized by max_connections and
+  # CNPG's worker defaults (~80Mi), the aux processes, and /dev/shm — which
+  # CNPG mounts as an in-memory emptyDir charged to this same cgroup. 256Mi
+  # left roughly nothing for an autovacuum or a dashboard refresh opening ten
+  # panel queries at once.
+  #
+  # Note this pod is Burstable, not Guaranteed: that needs requests == limits
+  # for CPU as well, and a CPU limit on a database only buys throttling —
+  # including during a pg_basebackup when a replica rejoins. The trade is
+  # deliberate, but it means CNPG does not apply its postmaster OOM-score
+  # protection, which is the other reason the memory limit is not tight.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+  postgresql:
+    parameters:
+      max_connections: "50"
+      shared_buffers: 64MB
+      # Pinned down from the 64MB default: allocated per autovacuum worker and
+      # per index build, and at this container size a couple of concurrent
+      # allocations is the difference between working and OOMKilled.
+      maintenance_work_mem: 24MB
+      autovacuum_work_mem: 24MB
+      # pg_wal shares the PGDATA volume, and HA replication slots are on by
+      # default. Without a cap, a replica that stays down pins WAL until the
+      # volume fills and the primary goes read-only — a stuck standby would
+      # take out writes entirely.
+      max_slot_wal_keep_size: 1GB

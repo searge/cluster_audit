@@ -1,0 +1,32 @@
+{{- if .Values.backup.enabled }}
+---
+# Weekly snapshot, scheduled before the ingest so each backup holds a complete
+# week and a failed ingest can never overwrite the last good state.
+#
+# The schedule has SIX fields, not five: CNPG's cron parser takes seconds
+# first. A five-field expression here is accepted and fires at the wrong time.
+#
+# ScheduledBackup has no timeZone field, unlike the CronJobs in this chart:
+# the expression is evaluated in the operator pod's timezone, in cnpg-system.
+# The exact hour therefore is not ours to assert — only the ordering relative
+# to the ingest matters, and a few hours either way preserves it.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ .Values.database.name }}-weekly
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform-capacity.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  immediate: true
+  # `none`, not `self`: with `self` every Backup is owned by this object, so
+  # renaming it — or dropping this template while Argo CD has prune enabled —
+  # cascade-deletes every restore point at once. Restore points should outlive
+  # the schedule that produced them; retention is the prune CronJob's job.
+  backupOwnerReference: none
+  method: volumeSnapshot
+  cluster:
+    name: {{ .Values.database.name }}
+{{- end }}
