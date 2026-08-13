@@ -21,6 +21,7 @@ from mks.application.capacity_api_service import (
     DEFAULT_WINDOW,
     latest_for_project,
     latest_per_project,
+    offenders,
 )
 from mks.infrastructure.postgres_client import PostgresClient, PostgresError
 
@@ -46,6 +47,27 @@ def create_app(database_url: str) -> FastAPI:
     ) -> list[dict[str, Any]]:
         return [asdict(row) for row in _guarded(latest_per_project, client, window)]
 
+    def offenders_list(
+        weeks: int = Query(4, ge=1, le=12),
+        floor_cpu: float = Query(2.0, alias="floor-cpu-cores", ge=0),
+        floor_storage: float = Query(50.0, alias="floor-storage-gib", ge=0),
+        top: int = Query(10, ge=1, le=50),
+        window: str = Query(DEFAULT_WINDOW),
+    ) -> list[dict[str, Any]]:
+        return [
+            asdict(row)
+            for row in _guarded(
+                lambda: offenders(
+                    client,
+                    weeks=weeks,
+                    floor_cpu_cores=floor_cpu,
+                    floor_storage_gib=floor_storage,
+                    top=top,
+                    window=window,
+                )
+            )
+        ]
+
     def project_latest(
         project_id: str,
         window: str = Query(DEFAULT_WINDOW),
@@ -61,6 +83,7 @@ def create_app(database_url: str) -> FastAPI:
     # handlers being used; a decorator-registered closure reads as dead code.
     app.get("/healthz")(healthz)
     app.get("/v1/projects/latest")(projects_latest)
+    app.get("/v1/offenders")(offenders_list)
     app.get("/v1/projects/{project_id}/latest")(project_latest)
 
     return app
